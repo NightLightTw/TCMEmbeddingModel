@@ -1,7 +1,7 @@
 [project]
 name = "tcmembeddingmodel"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fine-tuning Qwen3-Embedding model for Traditional Chinese Medicine (TCM) domain"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
