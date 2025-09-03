@@ -96,6 +96,40 @@ uv run python your_script.py
 
 ```
 
+### 資料準備
+```bash
+# 將原始資料轉換為 InfoNCE 格式
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_full.jsonl
+```
+
+### 開始訓練
+```bash
+# 快速測試訓練（使用現有小資料集）
+uv run swift sft \
+    --model Qwen/Qwen3-Embedding-0.6B \
+    --task_type embedding \
+    --model_type qwen3_emb \
+    --train_type lora \
+    --dataset ./data/train.jsonl \
+    --output_dir output/my-training \
+    --num_train_epochs 1 \
+    --per_device_train_batch_size 2 \
+    --learning_rate 1e-4 \
+    --loss_type infonce \
+    --bf16 true
+```
+
+### 模型推理
+```bash
+# 使用訓練好的模型
+uv run swift infer \
+    --ckpt_dir output/my-training/checkpoint-xxx \
+    --infer_data_path data/infer_example.jsonl
+```
+
 ### SWIFT Fine-tuning 指南
 
 本專案使用 [ms-swift](https://github.com/modelscope/ms-swift) 框架對 [Qwen3-Embedding](https://github.com/QwenLM/Qwen3-Embedding) 模型進行 fine-tuning。
@@ -166,28 +200,67 @@ InfoNCE loss 的評估包含以下指標：
 
 參考資料：[ms-swift InfoNCE 格式文檔](https://github.com/modelscope/ms-swift/blob/main/docs/source_en/BestPractices/Embedding.md#format-for-infonce)
 
+## 資料準備和轉換
+
+### 原始資料集
+本專案使用[TCM-SD](https://github.com/Borororo/ZY-BERT)資料集，包含：
+- **train.jsonl**: 43,180 筆訓練案例
+- **test.jsonl**: 5,486 筆測試案例  
+- **dev.jsonl**: 5,486 筆驗證資料
+- **syndrome_knowledge.jsonl**: 1,027 筆症候知識
+- **syndrome_vocab.txt**:148 筆症候詞
+
+### 資料轉換工具
+
+使用 `scripts/convert_to_infonce.py` 將原始病例資料轉換為適合 InfoNCE 訓練的格式：
+
+```bash
+# 轉換訓練資料
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train.jsonl
+
+# 限制樣本數量（用於測試）
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_sample.jsonl \
+    --max-samples 10
+```
+
+### 資料格式轉換說明
+
+轉換腳本會將病例記錄：
+- **query**: 組合「主訴」、「現病史」、「體格檢查」等臨床資訊
+- **response**: 根據症候類型匹配對應的知識庫內容，包含「名稱」、「定義」、「典型表現」、「常見疾病」等
 
 ## 專案結構
 
 ```
 TCMEmbeddingModel/
-├── README.md              # 專案說明文件
-├── pyproject.toml         # 專案配置和依賴管理 (uv 配置)
-├── uv.lock               # uv 依賴鎖定文件
-├── .python-version       # Python 版本指定
-├── .gitignore           # Git 忽略文件配置
-├── main.py              # 主要執行入口
-└── .venv/               # uv 建立的虛擬環境 (不納入版控)
+├── README.md                    # 專案說明文件
+├── pyproject.toml               # 專案配置和依賴管理 (uv 配置)
+├── uv.lock                     # uv 依賴鎖定文件
+├── .python-version             # Python 版本指定 (3.10)
+├── main.py                     # 主要執行入口
+├── data/                       # 資料目錄
+│   ├── train.jsonl            # 訓練資料 (InfoNCE 格式)
+│   ├── train_example.jsonl    # 訓練範例資料
+│   ├── infer_example.jsonl    # 推理範例資料
+│   └── raw_data/              # 原始資料
+│       └── TCM_SD/           # TCM 症候診斷資料集
+│           ├── train.jsonl   # 原始訓練資料
+│           ├── test.jsonl    # 原始測試資料
+│           ├── dev.jsonl     # 原始驗證資料
+│           ├── syndrome_knowledge.jsonl  # 症候知識庫
+│           ├── syndrome_vocab.txt        # 症候詞表
+│           └── Code/         # 原始程式碼
+├── scripts/                    # 工具腳本
+│   └── convert_to_infonce.py  # 將案例資料轉換為 InfoNCE 格式
+├── output/                     # 訓練輸出
+└── .venv/                     # uv 建立的虛擬環境 (不納入版控)
 ```
-
-### 計劃中的結構
-未來將逐步建立以下目錄結構：
-- `src/tcmembeddingmodel/` - 主要模組
-- `tests/` - 測試目錄  
-- `configs/` - 配置文件
-- `data/` - 資料目錄
-- `scripts/` - 工具腳本
-- `docs/` - 文檔目錄
 
 ## uv 配置說明
 
@@ -203,7 +276,6 @@ TCMEmbeddingModel/
 - 🔄 **分散式訓練**：支援 DDP、模型並行、流水線並行
 - 📊 **多種任務**：支援文本分類、序列標註、embedding 等任務
 - 🛠️ **易於使用**：提供命令行工具和 Python API
-- 📚 **豐富文檔**：詳細的 [最佳實踐指南](https://github.com/modelscope/ms-swift/blob/main/docs/source_en/BestPractices/Embedding.md)
 
 ### uv 優勢
 - 🚀 **速度**：比 pip 快 10-100 倍的依賴安裝
