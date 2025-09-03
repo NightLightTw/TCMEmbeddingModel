@@ -136,6 +136,36 @@ swift sft \
     --deepspeed zero3
 ```
 
+### InfoNCE 資料格式規範
+
+#### 格式
+```json
+{"query": "sentence1", "response": "sentence2"}
+```
+
+#### InfoNCE 環境變數設定
+
+InfoNCE loss 支援以下環境變數：
+
+- **INFONCE_TEMPERATURE**: 溫度參數。若未設定，預設值為 0.01
+- **INFONCE_USE_BATCH**: 決定是否使用樣本內的 rejected_response（hard negative samples）或使用批次內的所有回應。預設為 True，表示使用批次內的回應
+- **INFONCE_HARD_NEGATIVES**: hard negatives 的數量。若未設定，將使用 rejected_response 中的所有樣本。由於長度可能不一致，會使用 for 迴圈計算損失（較慢）。若設定為特定數值，且樣本不足時，會隨機取樣補足；若樣本過多，則會選取前 INFONCE_HARD_NEGATIVES 個
+- **INFONCE_MASK_FAKE_NEGATIVE**: 遮蔽假陰性樣本。預設為 False。啟用時，會檢查樣本的相似度是否大於正樣本相似度加 0.1，若是則將該樣本的相似度設為 -inf，以防止正樣本洩漏
+
+> **注意**: 也可以在資料集中設定相等的 hard negatives 數量，這樣即使未設定也不會使用 for 迴圈方法，從而加速計算。
+> 
+> rejected_response 也可以省略。在此情況下，INFONCE_USE_BATCH 保持為 True，會使用批次內的其他樣本作為 rejected responses。
+
+#### InfoNCE 評估指標
+
+InfoNCE loss 的評估包含以下指標：
+
+- **mean_neg**: 所有 hard negatives 的平均值
+- **mean_pos**: 所有 positives 的平均值  
+- **margin**: (positive - max hard negative) 的平均值
+
+參考資料：[ms-swift InfoNCE 格式文檔](https://github.com/modelscope/ms-swift/blob/main/docs/source_en/BestPractices/Embedding.md#format-for-infonce)
+
 
 ## 專案結構
 
