@@ -9,8 +9,9 @@
 ## 目標功能
 
 - 🏥 **中醫領域特化**：針對中醫術語、診斷、方劑等專業內容優化
-- 🔍 **語義檢索**：提供精確的中醫文獻和知識檢索能力
+- 🔍 **語義檢索**：提供精確的中醫文獻和知識檢索能力  
 - 🚀 **高效訓練**：基於 ms-swift 框架的高效 fine-tuning 流程
+- 😷 **病例對證型微調**：在 TCM-SD 資料集上成功完成 fine-tuning
 
 ## 環境需求
 
@@ -96,6 +97,51 @@ uv run python your_script.py
 
 ```
 
+### 資料準備
+```bash
+# 將原始資料轉換為 InfoNCE 格式
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_full.jsonl
+```
+
+### 開始訓練
+```bash
+# 訓練腳本 (scripts/train.sh)
+NPROC_PER_NODE=2 \
+swift sft \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --task_type embedding \
+  --model_type qwen3_emb \
+  --train_type full \
+  --dataset data/train.jsonl \
+  --val_dataset data/dev.jsonl \
+  --output_dir output \
+  --eval_strategy steps --eval_steps 100 \
+  --num_train_epochs 5 \
+  --per_device_train_batch_size 32 \
+  --learning_rate 6e-6 \
+  --loss_type infonce \
+  --bf16 true
+```
+
+### 模型推理
+```bash
+# 使用部署腳本進行模型服務部署 (scripts/deploy.sh)
+swift deploy \
+  --ckpt_dir ../output/my-training/checkpoint-xxx \
+  --served_model_name Qwen3-Embedding-0.6B-finetuned \
+  --task_type embedding \
+  --infer_backend vllm \
+  --torch_dtype float16
+
+# 或者使用推理模式
+uv run swift infer \
+    --ckpt_dir output/my-training/checkpoint-xxx \
+    --infer_data_path data/infer_example.jsonl
+```
+
 ### SWIFT Fine-tuning 指南
 
 本專案使用 [ms-swift](https://github.com/modelscope/ms-swift) 框架對 [Qwen3-Embedding](https://github.com/QwenLM/Qwen3-Embedding) 模型進行 fine-tuning。
@@ -166,28 +212,61 @@ InfoNCE loss 的評估包含以下指標：
 
 參考資料：[ms-swift InfoNCE 格式文檔](https://github.com/modelscope/ms-swift/blob/main/docs/source_en/BestPractices/Embedding.md#format-for-infonce)
 
+## 資料準備和轉換
+
+### 原始資料集
+本專案使用[TCM-SD](https://github.com/Borororo/ZY-BERT)資料集，包含：
+- **train.jsonl**: 43,180 筆訓練案例
+- **test.jsonl**: 5,486 筆測試案例  
+- **dev.jsonl**: 5,486 筆驗證資料
+- **syndrome_knowledge.jsonl**: 1,027 筆症候知識
+- **syndrome_vocab.txt**:148 筆症候詞
+
+### 資料轉換工具
+
+使用 `scripts/convert_to_infonce.py` 將原始病例資料轉換為適合 InfoNCE 訓練的格式：
+
+```bash
+# 轉換訓練資料
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train.jsonl
+
+# 限制樣本數量（用於測試）
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_sample.jsonl \
+    --max-samples 10
+```
+
+### 資料格式轉換說明
+
+轉換腳本會將病例記錄：
+- **query**: 組合「主訴」、「現病史」、「體格檢查」等臨床資訊
+- **response**: 根據症候類型匹配對應的知識庫內容，包含「名稱」、「定義」、「典型表現」、「常見疾病」等
 
 ## 專案結構
 
 ```
 TCMEmbeddingModel/
-├── README.md              # 專案說明文件
-├── pyproject.toml         # 專案配置和依賴管理 (uv 配置)
-├── uv.lock               # uv 依賴鎖定文件
-├── .python-version       # Python 版本指定
-├── .gitignore           # Git 忽略文件配置
-├── main.py              # 主要執行入口
-└── .venv/               # uv 建立的虛擬環境 (不納入版控)
+├── README.md                    # 專案說明文件
+├── pyproject.toml               # 專案配置和依賴管理 (uv 配置)
+├── uv.lock                     # uv 依賴鎖定文件
+├── main.py                     # 主要執行入口
+├── data/                       # 資料目錄
+├── scripts/                    # 工具腳本
+│   ├── convert_to_infonce.py  # 將案例資料轉換為 InfoNCE 格式
+│   ├── train.sh               # 訓練腳本
+│   └── deploy.sh              # 部署腳本
+├── output/                     # 訓練輸出
+│   └── vX-XXXXXXXX-XXXXXX/    # 訓練結果
+│       ├── checkpoint-XXXX/   # 模型檢查點
+│       ├── logging.jsonl      # 訓練日誌
+│       └── runs/              # TensorBoard 日誌
+└── .venv/                     # uv 建立的虛擬環境 (不納入版控)
 ```
-
-### 計劃中的結構
-未來將逐步建立以下目錄結構：
-- `src/tcmembeddingmodel/` - 主要模組
-- `tests/` - 測試目錄  
-- `configs/` - 配置文件
-- `data/` - 資料目錄
-- `scripts/` - 工具腳本
-- `docs/` - 文檔目錄
 
 ## uv 配置說明
 
@@ -195,7 +274,6 @@ TCMEmbeddingModel/
 - **依賴管理**：使用 uv 進行快速依賴解析和安裝
 - **Python 版本**：固定使用 Python 3.10
 - **核心依賴**：ms-swift, torch, transformers
-- **開發依賴**：包含代碼品質工具 (black, isort, pytest 等)
 - **命令列工具**：預留了未來的 CLI 命令入口
 
 ### SWIFT 框架特色
@@ -203,7 +281,6 @@ TCMEmbeddingModel/
 - 🔄 **分散式訓練**：支援 DDP、模型並行、流水線並行
 - 📊 **多種任務**：支援文本分類、序列標註、embedding 等任務
 - 🛠️ **易於使用**：提供命令行工具和 Python API
-- 📚 **豐富文檔**：詳細的 [最佳實踐指南](https://github.com/modelscope/ms-swift/blob/main/docs/source_en/BestPractices/Embedding.md)
 
 ### uv 優勢
 - 🚀 **速度**：比 pip 快 10-100 倍的依賴安裝
@@ -214,3 +291,4 @@ TCMEmbeddingModel/
 ## 技術參考文件
 - [ms-swift Embedding 最佳實踐](https://github.com/modelscope/ms-swift/blob/main/docs/source_en/BestPractices/Embedding.md)
 - [Qwen3-Embedding SWIFT 訓練支援](https://github.com/QwenLM/Qwen3-Embedding/blob/main/docs/training/SWIFT.md#swift-training-support)
+- [TCM-SD 資料集論文](https://github.com/Borororo/ZY-BERT)
