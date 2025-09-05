@@ -9,8 +9,9 @@
 ## 目標功能
 
 - 🏥 **中醫領域特化**：針對中醫術語、診斷、方劑等專業內容優化
-- 🔍 **語義檢索**：提供精確的中醫文獻和知識檢索能力
+- 🔍 **語義檢索**：提供精確的中醫文獻和知識檢索能力  
 - 🚀 **高效訓練**：基於 ms-swift 框架的高效 fine-tuning 流程
+- 😷 **病例對證型微調**：在 TCM-SD 資料集上成功完成 fine-tuning
 
 ## 環境需求
 
@@ -107,24 +108,35 @@ uv run python scripts/convert_to_infonce.py \
 
 ### 開始訓練
 ```bash
-# 快速測試訓練（使用現有小資料集）
-uv run swift sft \
-    --model Qwen/Qwen3-Embedding-0.6B \
-    --task_type embedding \
-    --model_type qwen3_emb \
-    --train_type lora \
-    --dataset ./data/train.jsonl \
-    --output_dir output/my-training \
-    --num_train_epochs 1 \
-    --per_device_train_batch_size 2 \
-    --learning_rate 1e-4 \
-    --loss_type infonce \
-    --bf16 true
+# 訓練腳本 (scripts/train.sh)
+NPROC_PER_NODE=2 \
+swift sft \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --task_type embedding \
+  --model_type qwen3_emb \
+  --train_type full \
+  --dataset data/train.jsonl \
+  --val_dataset data/dev.jsonl \
+  --output_dir output \
+  --eval_strategy steps --eval_steps 100 \
+  --num_train_epochs 5 \
+  --per_device_train_batch_size 32 \
+  --learning_rate 6e-6 \
+  --loss_type infonce \
+  --bf16 true
 ```
 
 ### 模型推理
 ```bash
-# 使用訓練好的模型
+# 使用部署腳本進行模型服務部署 (scripts/deploy.sh)
+swift deploy \
+  --ckpt_dir ../output/my-training/checkpoint-xxx \
+  --served_model_name Qwen3-Embedding-0.6B-finetuned \
+  --task_type embedding \
+  --infer_backend vllm \
+  --torch_dtype float16
+
+# 或者使用推理模式
 uv run swift infer \
     --ckpt_dir output/my-training/checkpoint-xxx \
     --infer_data_path data/infer_example.jsonl
@@ -242,23 +254,17 @@ TCMEmbeddingModel/
 ├── README.md                    # 專案說明文件
 ├── pyproject.toml               # 專案配置和依賴管理 (uv 配置)
 ├── uv.lock                     # uv 依賴鎖定文件
-├── .python-version             # Python 版本指定 (3.10)
 ├── main.py                     # 主要執行入口
 ├── data/                       # 資料目錄
-│   ├── train.jsonl            # 訓練資料 (InfoNCE 格式)
-│   ├── train_example.jsonl    # 訓練範例資料
-│   ├── infer_example.jsonl    # 推理範例資料
-│   └── raw_data/              # 原始資料
-│       └── TCM_SD/           # TCM 症候診斷資料集
-│           ├── train.jsonl   # 原始訓練資料
-│           ├── test.jsonl    # 原始測試資料
-│           ├── dev.jsonl     # 原始驗證資料
-│           ├── syndrome_knowledge.jsonl  # 症候知識庫
-│           ├── syndrome_vocab.txt        # 症候詞表
-│           └── Code/         # 原始程式碼
 ├── scripts/                    # 工具腳本
-│   └── convert_to_infonce.py  # 將案例資料轉換為 InfoNCE 格式
+│   ├── convert_to_infonce.py  # 將案例資料轉換為 InfoNCE 格式
+│   ├── train.sh               # 訓練腳本
+│   └── deploy.sh              # 部署腳本
 ├── output/                     # 訓練輸出
+│   └── vX-XXXXXXXX-XXXXXX/    # 訓練結果
+│       ├── checkpoint-XXXX/   # 模型檢查點
+│       ├── logging.jsonl      # 訓練日誌
+│       └── runs/              # TensorBoard 日誌
 └── .venv/                     # uv 建立的虛擬環境 (不納入版控)
 ```
 
@@ -268,7 +274,6 @@ TCMEmbeddingModel/
 - **依賴管理**：使用 uv 進行快速依賴解析和安裝
 - **Python 版本**：固定使用 Python 3.10
 - **核心依賴**：ms-swift, torch, transformers
-- **開發依賴**：包含代碼品質工具 (black, isort, pytest 等)
 - **命令列工具**：預留了未來的 CLI 命令入口
 
 ### SWIFT 框架特色
@@ -286,3 +291,4 @@ TCMEmbeddingModel/
 ## 技術參考文件
 - [ms-swift Embedding 最佳實踐](https://github.com/modelscope/ms-swift/blob/main/docs/source_en/BestPractices/Embedding.md)
 - [Qwen3-Embedding SWIFT 訓練支援](https://github.com/QwenLM/Qwen3-Embedding/blob/main/docs/training/SWIFT.md#swift-training-support)
+- [TCM-SD 資料集論文](https://github.com/Borororo/ZY-BERT)
