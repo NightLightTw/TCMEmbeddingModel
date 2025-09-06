@@ -136,6 +136,14 @@ swift deploy \
   --infer_backend vllm \
   --torch_dtype float16
 
+# 部署原始版本模型
+swift deploy \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --served_model_name Qwen3-Embedding-0.6B-base \
+  --task_type embedding \
+  --infer_backend vllm \
+  --torch_dtype float16
+
 # 或者使用推理模式
 uv run swift infer \
     --ckpt_dir output/my-training/checkpoint-xxx \
@@ -186,7 +194,10 @@ swift sft \
 
 #### 格式
 ```json
-{"query": "sentence1", "response": "sentence2"}
+# sample without rejected_response
+{"query": "sentence1", "response": "sentence1-positive"}
+# sample with multiple rejected_response
+{"query": "sentence1", "response": "sentence1-positive", "rejected_response":  ["sentence1-negative1", "sentence1-negative2", ...]}
 ```
 
 #### InfoNCE 環境變數設定
