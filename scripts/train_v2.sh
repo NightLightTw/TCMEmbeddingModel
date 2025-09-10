@@ -19,9 +19,9 @@ swift sft \
   --output_dir ../output \
   --eval_strategy steps --eval_steps 100 \
   --num_train_epochs 5 \
-  --per_device_train_batch_size 16 \
-  --per_device_eval_batch_size 16 \
-  --gradient_accumulation_steps 1 \
+  --per_device_train_batch_size 8 \
+  --per_device_eval_batch_size 8 \
+  --gradient_accumulation_steps 4 \
   --learning_rate 6e-6 \
   --loss_type infonce \
   --dataloader_drop_last true \
