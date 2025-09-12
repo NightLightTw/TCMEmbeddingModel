@@ -22,9 +22,17 @@ Usage examples:
     --output ./data/train.jsonl \
     --with-hard-negatives
 
+  # With hard negatives using custom embedding
+  python scripts/convert_to_infonce.py \
+    --input ./data/raw_data/TCM_SD/train.jsonl \
+    --knowledge ./data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output ./data/train.jsonl \
+    --with-hard-negatives-custom-embedding
+
 Options:
-  --max-samples N          Limit number of processed samples
-  --with-hard-negatives   Generate hard negatives using BM25; outputs format with rejected_response
+  --max-samples N                         Limit number of processed samples
+  --with-hard-negatives                   Generate hard negatives using BM25; outputs format with rejected_response
+  --with-hard-negatives-custom-embedding  Generate hard negatives using custom embedding API; outputs format with rejected_response
 
 Output formats:
   Standard: {"query": "...", "response": "..."}
@@ -34,6 +42,8 @@ Dependencies:
   - tqdm: For progress bars during processing
   - jieba: For Chinese text tokenization (with --with-hard-negatives)
   - rank-bm25: For BM25 similarity search (with --with-hard-negatives)
+  - requests: For HTTP API calls (with --with-hard-negatives-custom-embedding)
+  - numpy: For embedding similarity calculations (with --with-hard-negatives-custom-embedding)
 """
 
 from __future__ import annotations
@@ -45,6 +55,8 @@ import sys
 from typing import Dict, Iterable, List, Tuple
 
 import jieba
+import numpy as np
+import requests
 from rank_bm25 import BM25Okapi
 from tqdm import tqdm
 
@@ -266,14 +278,144 @@ def get_hard_negatives(
     return hard_negatives
 
 
+def call_custom_embedding_api(
+    text: str, 
+    api_url: str = "http://0.0.0.0:8000/v1/embeddings",
+    model: str = "Qwen3-Embedding-0.6B-finetuned"
+) -> np.ndarray:
+    """Call custom embedding API to get text embeddings."""
+    try:
+        payload = {
+            "model": model,
+            "input": text
+        }
+        
+        response = requests.post(
+            api_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        result = response.json()
+        # Extract embedding from API response
+        if "data" in result and len(result["data"]) > 0:
+            embedding = result["data"][0]["embedding"]
+            return np.array(embedding)
+        else:
+            raise ValueError(f"Invalid API response format: {result}")
+            
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Failed to call embedding API: {e}")
+    except (KeyError, IndexError, ValueError) as e:
+        raise RuntimeError(f"Failed to parse embedding API response: {e}")
+
+
+def build_custom_embedding_index(
+    knowledge_index: Dict[str, dict],
+    api_url: str = "http://0.0.0.0:8000/v1/embeddings",
+    model: str = "Qwen3-Embedding-0.6B-finetuned"
+) -> Tuple[np.ndarray, List[str], List[dict]]:
+    """Build custom embedding index for syndrome knowledge."""
+    embeddings = []
+    norm_keys = []
+    knowledge_objects = []
+    
+    print("Processing syndrome knowledge for custom embedding indexing...")
+    for norm_key, knowledge_obj in tqdm(knowledge_index.items(), desc="Getting embeddings"):
+        # Build searchable text from knowledge  
+        searchable_parts = []
+        name = knowledge_obj.get("Name", "")
+        defin = knowledge_obj.get("Definition", "")
+        perf = knowledge_obj.get("Typical_performance", "")
+        common = knowledge_obj.get("Common_isease", "")
+        
+        if name:
+            searchable_parts.append(name)
+        if defin:
+            searchable_parts.append(defin)
+        if perf:
+            searchable_parts.append(perf)
+        if common:
+            searchable_parts.append(common)
+            
+        searchable_text = " ".join(searchable_parts)
+        
+        # Get embedding from API
+        try:
+            embedding = call_custom_embedding_api(searchable_text, api_url, model)
+            embeddings.append(embedding)
+            norm_keys.append(norm_key)
+            knowledge_objects.append(knowledge_obj)
+        except Exception as e:
+            print(f"Warning: Failed to get embedding for '{name}': {e}")
+            continue
+    
+    # Stack all embeddings into a matrix
+    if embeddings:
+        embedding_matrix = np.vstack(embeddings)
+        return embedding_matrix, norm_keys, knowledge_objects
+    else:
+        raise RuntimeError("No embeddings were successfully generated")
+
+
+def get_hard_negatives_with_custom_embedding(
+    query: str,
+    correct_norm_key: str,
+    embedding_matrix: np.ndarray,
+    norm_keys: List[str],
+    knowledge_objects: List[dict],
+    api_url: str = "http://0.0.0.0:8000/v1/embeddings",
+    model: str = "Qwen3-Embedding-0.6B-finetuned",
+    num_negatives: int = 5
+) -> List[str]:
+    """Get hard negative responses using custom embedding similarity."""
+    # Get query embedding
+    query_embedding = call_custom_embedding_api(query, api_url, model)
+    
+    # Calculate cosine similarities with all knowledge embeddings
+    # Normalize embeddings for cosine similarity
+    query_norm = query_embedding / np.linalg.norm(query_embedding)
+    knowledge_norms = embedding_matrix / np.linalg.norm(embedding_matrix, axis=1, keepdims=True)
+    
+    # Compute cosine similarities
+    similarities = np.dot(knowledge_norms, query_norm)
+    
+    # Create list of (similarity, index) pairs, excluding the correct syndrome
+    candidates = []
+    for i, (similarity, norm_key) in enumerate(zip(similarities, norm_keys)):
+        if norm_key != correct_norm_key:  # Exclude correct answer
+            candidates.append((similarity, i))
+    
+    # Sort by similarity (descending) and take top candidates
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    
+    # Build responses for top candidates
+    hard_negatives = []
+    for similarity, idx in candidates[:num_negatives]:
+        knowledge_obj = knowledge_objects[idx]
+        negative_response = build_response_from_knowledge(knowledge_obj)
+        if negative_response:  # Only add non-empty responses
+            hard_negatives.append(negative_response)
+    
+    return hard_negatives
+
+
 def convert(
     cases: List[dict],
     knowledge_index: Dict[str, dict],
     max_samples: int | None = None,
     with_hard_negatives: bool = False,
+    with_hard_negatives_custom_embedding: bool = False,
     bm25_index: BM25Okapi | None = None,
     norm_keys: List[str] | None = None,
     knowledge_objects: List[dict] | None = None,
+    embedding_matrix: np.ndarray | None = None,
+    embedding_norm_keys: List[str] | None = None,
+    embedding_knowledge_objects: List[dict] | None = None,
+    api_url: str = "http://0.0.0.0:8000/v1/embeddings",
+    model: str = "Qwen3-Embedding-0.6B-finetuned",
 ) -> Iterable[dict]:
     for idx, rec in enumerate(cases, 1):
         if max_samples is not None and idx > max_samples:
@@ -317,6 +459,28 @@ def convert(
                 "response": response,
                 "rejected_response": hard_negatives
             }
+        elif with_hard_negatives_custom_embedding:
+            # Generate hard negatives using custom embedding
+            if (embedding_matrix is None or embedding_norm_keys is None or 
+                embedding_knowledge_objects is None):
+                raise ValueError("Custom embedding index components required for hard negatives generation")
+            
+            hard_negatives = get_hard_negatives_with_custom_embedding(
+                query=query,
+                correct_norm_key=syn_key,
+                embedding_matrix=embedding_matrix,
+                norm_keys=embedding_norm_keys,
+                knowledge_objects=embedding_knowledge_objects,
+                api_url=api_url,
+                model=model,
+                num_negatives=5
+            )
+            
+            yield {
+                "query": query,
+                "response": response,
+                "rejected_response": hard_negatives
+            }
         else:
             # Original format
             yield {"query": query, "response": response}
@@ -335,10 +499,16 @@ def main(argv: List[str]) -> int:
     p.add_argument("--max-samples", type=int, default=None, help="Limit number of samples")
     p.add_argument("--with-hard-negatives", action="store_true", 
                    help="Generate hard negatives using BM25, outputs format with rejected_response")
+    p.add_argument("--with-hard-negatives-custom-embedding", action="store_true",
+                   help="Generate hard negatives using custom embedding API, outputs format with rejected_response")
     args = p.parse_args(argv)
 
     cases = load_cases(args.input)
     knowledge = load_knowledge(args.knowledge)
+    
+    # Check for conflicting options
+    if args.with_hard_negatives and args.with_hard_negatives_custom_embedding:
+        raise ValueError("Cannot use both --with-hard-negatives and --with-hard-negatives-custom-embedding")
     
     # Adjust output filename if using hard negatives
     output_path = args.output
@@ -346,6 +516,10 @@ def main(argv: List[str]) -> int:
         output_stem = output_path.stem
         output_suffix = output_path.suffix
         output_path = output_path.parent / f"{output_stem}_with_hard_negatives{output_suffix}"
+    elif args.with_hard_negatives_custom_embedding:
+        output_stem = output_path.stem
+        output_suffix = output_path.suffix
+        output_path = output_path.parent / f"{output_stem}_with_hard_negatives_custom_embedding{output_suffix}"
     
     # Build BM25 index if needed
     bm25_index, norm_keys, knowledge_objects = None, None, None
@@ -353,6 +527,13 @@ def main(argv: List[str]) -> int:
         print("Building BM25 index for hard negatives generation...")
         bm25_index, norm_keys, knowledge_objects = build_bm25_index(knowledge)
         print(f"Built BM25 index with {len(norm_keys)} syndrome entries")
+    
+    # Build custom embedding index if needed
+    embedding_matrix, embedding_norm_keys, embedding_knowledge_objects = None, None, None
+    if args.with_hard_negatives_custom_embedding:
+        print("Building custom embedding index for hard negatives generation...")
+        embedding_matrix, embedding_norm_keys, embedding_knowledge_objects = build_custom_embedding_index(knowledge)
+        print(f"Built custom embedding index with {len(embedding_norm_keys)} syndrome entries")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     written = 0
@@ -369,16 +550,26 @@ def main(argv: List[str]) -> int:
             knowledge, 
             max_samples=args.max_samples,
             with_hard_negatives=args.with_hard_negatives,
+            with_hard_negatives_custom_embedding=args.with_hard_negatives_custom_embedding,
             bm25_index=bm25_index,
             norm_keys=norm_keys,
-            knowledge_objects=knowledge_objects
+            knowledge_objects=knowledge_objects,
+            embedding_matrix=embedding_matrix,
+            embedding_norm_keys=embedding_norm_keys,
+            embedding_knowledge_objects=embedding_knowledge_objects
         )
         
         for item in tqdm(converted_items, total=total_samples, desc="Converting cases"):
             out.write(json.dumps(item, ensure_ascii=False) + "\n")
             written += 1
     
-    format_desc = "with hard negatives" if args.with_hard_negatives else "standard"
+    if args.with_hard_negatives:
+        format_desc = "with hard negatives (BM25)"
+    elif args.with_hard_negatives_custom_embedding:
+        format_desc = "with hard negatives (custom embedding)"
+    else:
+        format_desc = "standard"
+    
     print(f"Wrote {written} samples ({format_desc}) to {output_path}")
     return 0
 
