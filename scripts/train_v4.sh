@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-
 export CUDA_VISIBLE_DEVICES=0,2
 export NVIDIA_TF32_OVERRIDE=1
 
@@ -14,20 +13,22 @@ swift sft \
   --model Qwen/Qwen3-Embedding-4B \
   --task_type embedding \
   --model_type qwen3_emb \
-  --train_type lora \
+  --train_type full \
   --dataset ../data/train_with_hard_negatives.jsonl \
   --val_dataset ../data/dev_with_hard_negatives.jsonl \
   --output_dir ../output \
   --eval_strategy steps --eval_steps 100 \
   --num_train_epochs 5 \
-  --per_device_train_batch_size 4 \
-  --per_device_eval_batch_size 4 \
-  --gradient_accumulation_steps 8 \
+  --per_device_train_batch_size 2 \
+  --per_device_eval_batch_size 2 \
+  --gradient_accumulation_steps 16 \
   --learning_rate 6e-6 \
   --loss_type infonce \
-  --dataloader_drop_last true \
   --dataloader_num_workers 16 \
+  --dataloader_prefetch_factor 4 \
+  --dataloader_drop_last true \
   --dataloader_persistent_workers true \
+  --dataloader_pin_memory true \
   --attn_impl flash_attn \
   --bf16 true \
   --use_hf true \
