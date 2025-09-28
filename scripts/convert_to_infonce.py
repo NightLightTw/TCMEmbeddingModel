@@ -36,15 +36,26 @@ Usage examples:
     --output ./data/train.jsonl \
     --hybrid
 
+  # With hybrid hard negatives, split into individual samples
+  python scripts/convert_to_infonce.py \
+    --input ./data/raw_data/TCM_SD/train.jsonl \
+    --knowledge ./data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output ./data/train.jsonl \
+    --hybrid \
+    --split-negatives
+
 Options:
   --max-samples N                         Limit number of processed samples
   --with-hard-negatives                   Generate hard negatives using BM25; outputs format with rejected_response
   --with-hard-negatives-custom-embedding  Generate hard negatives using custom embedding API; outputs format with rejected_response
   --hybrid                                Generate hybrid hard negatives (2 random + top-3 BM25 + top-3 custom embedding); outputs format with rejected_response
+  --split-negatives                       Split each sample with multiple rejected_response into separate samples, each with single rejected_response
 
 Output formats:
   Standard: {"query": "...", "response": "..."}
   Hard negatives: {"query": "...", "response": "...", "rejected_response": ["...", "..."]}
+  Split negatives: {"query": "...", "response": "...", "rejected_response": ["..."]}
+                   {"query": "...", "response": "...", "rejected_response": ["..."]}
 
 Dependencies:
   - tqdm: For progress bars during processing
@@ -549,6 +560,7 @@ def convert(
     with_hard_negatives: bool = False,
     with_hard_negatives_custom_embedding: bool = False,
     hybrid: bool = False,
+    split_negatives: bool = False,
     bm25_index: BM25Okapi | None = None,
     norm_keys: List[str] | None = None,
     knowledge_objects: List[dict] | None = None,
@@ -595,11 +607,21 @@ def convert(
                 num_negatives=5
             )
             
-            yield {
-                "query": query,
-                "response": response,
-                "rejected_response": hard_negatives
-            }
+            if split_negatives:
+                # Split into separate samples, each with single rejected_response
+                for negative in hard_negatives:
+                    yield {
+                        "query": query,
+                        "response": response,
+                        "rejected_response": [negative]
+                    }
+            else:
+                # Original format with all negatives in one sample
+                yield {
+                    "query": query,
+                    "response": response,
+                    "rejected_response": hard_negatives
+                }
         elif with_hard_negatives_custom_embedding:
             # Generate hard negatives using custom embedding
             if (embedding_matrix is None or embedding_norm_keys is None or 
@@ -617,11 +639,21 @@ def convert(
                 num_negatives=5
             )
             
-            yield {
-                "query": query,
-                "response": response,
-                "rejected_response": hard_negatives
-            }
+            if split_negatives:
+                # Split into separate samples, each with single rejected_response
+                for negative in hard_negatives:
+                    yield {
+                        "query": query,
+                        "response": response,
+                        "rejected_response": [negative]
+                    }
+            else:
+                # Original format with all negatives in one sample
+                yield {
+                    "query": query,
+                    "response": response,
+                    "rejected_response": hard_negatives
+                }
         elif hybrid:
             # Generate hybrid hard negatives (2 random + top-3 BM25 + top-3 custom embedding)
             if (bm25_index is None or norm_keys is None or knowledge_objects is None or
@@ -643,11 +675,21 @@ def convert(
                 model=model
             )
             
-            yield {
-                "query": query,
-                "response": response,
-                "rejected_response": hard_negatives
-            }
+            if split_negatives:
+                # Split into separate samples, each with single rejected_response
+                for negative in hard_negatives:
+                    yield {
+                        "query": query,
+                        "response": response,
+                        "rejected_response": [negative]
+                    }
+            else:
+                # Original format with all negatives in one sample
+                yield {
+                    "query": query,
+                    "response": response,
+                    "rejected_response": hard_negatives
+                }
         else:
             # Original format
             yield {"query": query, "response": response}
@@ -670,6 +712,8 @@ def main(argv: List[str]) -> int:
                    help="Generate hard negatives using custom embedding API, outputs format with rejected_response")
     p.add_argument("--hybrid", action="store_true",
                    help="Generate hybrid hard negatives (2 random + top-3 BM25 + top-3 custom embedding), outputs format with rejected_response")
+    p.add_argument("--split-negatives", action="store_true",
+                   help="Split each sample with multiple rejected_response into separate samples, each with single rejected_response")
     args = p.parse_args(argv)
 
     cases = load_cases(args.input)
@@ -680,20 +724,33 @@ def main(argv: List[str]) -> int:
     if option_count > 1:
         raise ValueError("Cannot use multiple hard negative generation options simultaneously")
     
+    # Check if split-negatives is used without hard negatives
+    if args.split_negatives and option_count == 0:
+        raise ValueError("--split-negatives can only be used with hard negative generation options (--with-hard-negatives, --with-hard-negatives-custom-embedding, or --hybrid)")
+    
     # Adjust output filename if using hard negatives
     output_path = args.output
     if args.with_hard_negatives:
         output_stem = output_path.stem
         output_suffix = output_path.suffix
-        output_path = output_path.parent / f"{output_stem}_with_hard_negatives{output_suffix}"
+        suffix = "_with_hard_negatives"
+        if args.split_negatives:
+            suffix += "_split"
+        output_path = output_path.parent / f"{output_stem}{suffix}{output_suffix}"
     elif args.with_hard_negatives_custom_embedding:
         output_stem = output_path.stem
         output_suffix = output_path.suffix
-        output_path = output_path.parent / f"{output_stem}_with_hard_negatives_custom_embedding{output_suffix}"
+        suffix = "_with_hard_negatives_custom_embedding"
+        if args.split_negatives:
+            suffix += "_split"
+        output_path = output_path.parent / f"{output_stem}{suffix}{output_suffix}"
     elif args.hybrid:
         output_stem = output_path.stem
         output_suffix = output_path.suffix
-        output_path = output_path.parent / f"{output_stem}_hybrid{output_suffix}"
+        suffix = "_hybrid"
+        if args.split_negatives:
+            suffix += "_split"
+        output_path = output_path.parent / f"{output_stem}{suffix}{output_suffix}"
     
     # Build BM25 index if needed
     bm25_index, norm_keys, knowledge_objects = None, None, None
@@ -726,6 +783,7 @@ def main(argv: List[str]) -> int:
             with_hard_negatives=args.with_hard_negatives,
             with_hard_negatives_custom_embedding=args.with_hard_negatives_custom_embedding,
             hybrid=args.hybrid,
+            split_negatives=args.split_negatives,
             bm25_index=bm25_index,
             norm_keys=norm_keys,
             knowledge_objects=knowledge_objects,
@@ -740,10 +798,16 @@ def main(argv: List[str]) -> int:
     
     if args.with_hard_negatives:
         format_desc = "with hard negatives (BM25)"
+        if args.split_negatives:
+            format_desc += " - split into individual samples"
     elif args.with_hard_negatives_custom_embedding:
         format_desc = "with hard negatives (custom embedding)"
+        if args.split_negatives:
+            format_desc += " - split into individual samples"
     elif args.hybrid:
         format_desc = "with hybrid hard negatives (2 random + top-3 BM25 + top-3 custom embedding)"
+        if args.split_negatives:
+            format_desc += " - split into individual samples"
     else:
         format_desc = "standard"
     
