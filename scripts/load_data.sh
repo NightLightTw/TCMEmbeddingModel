@@ -19,10 +19,10 @@ python convert_to_infonce.py \
   --output ../data/train.jsonl \
   --with-hard-negatives-custom-embedding
 
-sleep 10
-
-python convert_to_infonce.py \
-  --input ../data/raw_data/TCM_SD/dev.jsonl \
-  --knowledge ../data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
-  --output ../data/dev.jsonl \
-  --with-hard-negatives-custom-embedding
+# With field combinations and hard negatives
+python scripts/convert_to_infonce.py \
+  --input ./data/raw_data/TCM_SD/train.jsonl \
+  --knowledge ./data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+  --output ./data/train.jsonl \
+  --field-combinations \
+  --with-hard-negatives

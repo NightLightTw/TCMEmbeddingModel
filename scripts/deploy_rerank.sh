@@ -15,8 +15,9 @@ export CUDA_VISIBLE_DEVICES=1
 #    --host 0.0.0.0
 
 # finetuned model
-vllm serve ../output/reranker/v0-20250911-010112/checkpoint-2000 \
+vllm serve ../output/reranker/v2-20250925-195405/checkpoint-12000 \
    --hf_overrides '{"architectures": ["Qwen3ForSequenceClassification"],"classifier_from_token": ["no", "yes"],"is_original_qwen3_reranker": true}' \
    --port 8001 \
    --host 0.0.0.0 \
-   --served_model_name Qwen/Qwen3-Reranker-0.6B-v0-2000
+   --served_model_name Qwen/Qwen3-Reranker-0.6B-v2-12000 \
+   --max-model-len 8192
