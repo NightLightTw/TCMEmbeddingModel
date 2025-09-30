@@ -44,18 +44,31 @@ Usage examples:
     --hybrid \
     --split-negatives
 
+  # With field combinations (generate multiple response formats)
+  python scripts/convert_to_infonce.py \
+    --input ./data/raw_data/TCM_SD/train.jsonl \
+    --knowledge ./data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output ./data/train.jsonl \
+    --field-combinations
+
 Options:
   --max-samples N                         Limit number of processed samples
   --with-hard-negatives                   Generate hard negatives using BM25; outputs format with rejected_response
   --with-hard-negatives-custom-embedding  Generate hard negatives using custom embedding API; outputs format with rejected_response
   --hybrid                                Generate hybrid hard negatives (2 random + top-3 BM25 + top-3 custom embedding); outputs format with rejected_response
   --split-negatives                       Split each sample with multiple rejected_response into separate samples, each with single rejected_response
+  --field-combinations                    Generate multiple response formats with different field combinations
 
 Output formats:
   Standard: {"query": "...", "response": "..."}
   Hard negatives: {"query": "...", "response": "...", "rejected_response": ["...", "..."]}
   Split negatives: {"query": "...", "response": "...", "rejected_response": ["..."]}
                    {"query": "...", "response": "...", "rejected_response": ["..."]}
+  Field combinations: Multiple samples per case with different response field combinations:
+                     {"query": "...", "response": "名称：..."}
+                     {"query": "...", "response": "定义：..."}
+                     {"query": "...", "response": "名称：... 定义：..."}
+                     ... (11 combinations total)
 
 Dependencies:
   - tqdm: For progress bars during processing
@@ -211,6 +224,72 @@ def build_response_from_knowledge(k: dict) -> str:
     return "".join(segments).strip()
 
 
+def get_field_combinations() -> List[List[str]]:
+    """
+    Get all possible field combinations for knowledge response generation.
+    
+    Returns a list of field combinations, where each combination is a list of field names.
+    Fields: name, definition, typical_performance, common_disease
+    """
+    return [
+        ["name"],                                           # 名称
+        ["definition"],                                     # 定义
+        ["typical_performance"],                            # 典型表现
+        ["common_disease"],                                # 常见疾病
+        ["name", "definition"],                            # 名称+定义
+        ["name", "typical_performance"],                   # 名称+典型表现
+        ["name", "common_disease"],                        # 名称+常见疾病
+        ["name", "definition", "typical_performance"],     # 名称+定义+典型表现
+        ["name", "definition", "common_disease"],          # 名称+定义+常见疾病
+        ["name", "typical_performance", "common_disease"], # 名称+典型表现+常见疾病
+        ["name", "definition", "typical_performance", "common_disease"]  # 名称+定义+典型表现+常见疾病
+    ]
+
+
+def build_response_with_field_combination(k: dict, fields: List[str], strict_mode: bool = False) -> str:
+    """
+    Build response from knowledge using specified field combination.
+    
+    Args:
+        k: Knowledge dictionary
+        fields: List of fields to include in response
+        strict_mode: If True, return empty string if any required field is missing
+    
+    Returns:
+        Formatted response string
+    """
+    name = k.get("Name")
+    defin = k.get("Definition")
+    perf = k.get("Typical_performance")
+    common = k.get("Common_isease")  # note: source key uses single 'd'
+
+    # Check if all required fields are available in strict mode
+    if strict_mode:
+        field_values = {
+            "name": name,
+            "definition": defin,
+            "typical_performance": perf,
+            "common_disease": common
+        }
+        for field in fields:
+            if not field_values.get(field):
+                return ""  # Return empty if any required field is missing
+
+    segments: List[str] = []
+    
+    for field in fields:
+        if field == "name" and name:
+            segments.append(f"名称：{name}。\n")
+        elif field == "definition" and defin:
+            segments.append(f"定义：{defin}\n")
+        elif field == "typical_performance" and perf:
+            segments.append(f"典型表现：{perf}\n")
+        elif field == "common_disease" and common:
+            segments.append(f"常见疾病：{common}\n")
+    
+    return "".join(segments).strip()
+
+
 def pick_syndrome_key(rec: dict) -> Tuple[str, str]:
     # Return (original_value, normalized_key)
     for key in ("norm_syndrome", "syndrome", "证候", "证型"):
@@ -269,7 +348,8 @@ def get_hard_negatives(
     bm25_index: BM25Okapi, 
     norm_keys: List[str], 
     knowledge_objects: List[dict],
-    num_negatives: int = 5
+    num_negatives: int = 5,
+    field_combination: List[str] | None = None
 ) -> List[str]:
     """Get hard negative responses using BM25 similarity."""
     # Tokenize the query
@@ -291,7 +371,12 @@ def get_hard_negatives(
     hard_negatives = []
     for score, idx in candidates[:num_negatives]:
         knowledge_obj = knowledge_objects[idx]
-        negative_response = build_response_from_knowledge(knowledge_obj)
+        if field_combination is not None:
+            # Use specified field combination format with strict mode for consistency
+            negative_response = build_response_with_field_combination(knowledge_obj, field_combination, strict_mode=True)
+        else:
+            # Use standard format
+            negative_response = build_response_from_knowledge(knowledge_obj)
         if negative_response:  # Only add non-empty responses
             hard_negatives.append(negative_response)
     
@@ -388,7 +473,8 @@ def get_hard_negatives_with_custom_embedding(
     knowledge_objects: List[dict],
     api_url: str = "http://0.0.0.0:8000/v1/embeddings",
     model: str = "Qwen3-Embedding-0.6B-finetuned",
-    num_negatives: int = 5
+    num_negatives: int = 5,
+    field_combination: List[str] | None = None
 ) -> List[str]:
     """Get hard negative responses using custom embedding similarity."""
     # Get query embedding
@@ -415,7 +501,12 @@ def get_hard_negatives_with_custom_embedding(
     hard_negatives = []
     for similarity, idx in candidates[:num_negatives]:
         knowledge_obj = knowledge_objects[idx]
-        negative_response = build_response_from_knowledge(knowledge_obj)
+        if field_combination is not None:
+            # Use specified field combination format with strict mode for consistency
+            negative_response = build_response_with_field_combination(knowledge_obj, field_combination, strict_mode=True)
+        else:
+            # Use standard format
+            negative_response = build_response_from_knowledge(knowledge_obj)
         if negative_response:  # Only add non-empty responses
             hard_negatives.append(negative_response)
     
@@ -425,7 +516,8 @@ def get_hard_negatives_with_custom_embedding(
 def get_random_negatives(
     correct_norm_key: str,
     knowledge_index: Dict[str, dict],
-    num_negatives: int = 2
+    num_negatives: int = 2,
+    field_combination: List[str] | None = None
 ) -> List[str]:
     """Get random negative responses, excluding the correct syndrome."""
     # Get all available knowledge objects excluding the correct one
@@ -443,7 +535,12 @@ def get_random_negatives(
     # Build responses for sampled objects
     random_negatives = []
     for knowledge_obj in sampled_objects:
-        negative_response = build_response_from_knowledge(knowledge_obj)
+        if field_combination is not None:
+            # Use specified field combination format with strict mode for consistency
+            negative_response = build_response_with_field_combination(knowledge_obj, field_combination, strict_mode=True)
+        else:
+            # Use standard format
+            negative_response = build_response_from_knowledge(knowledge_obj)
         if negative_response:  # Only add non-empty responses
             random_negatives.append(negative_response)
     
@@ -461,14 +558,15 @@ def get_hybrid_hard_negatives(
     embedding_norm_keys: List[str],
     embedding_knowledge_objects: List[dict],
     api_url: str = "http://0.0.0.0:8000/v1/embeddings",
-    model: str = "Qwen3-Embedding-0.6B-finetuned"
+    model: str = "Qwen3-Embedding-0.6B-finetuned",
+    field_combination: List[str] | None = None
 ) -> List[str]:
     """Get hybrid hard negatives: 2 random + top-3 BM25 + top-3 custom embedding, ensuring uniqueness."""
     all_negatives = []
     used_responses = set()
     
     # 1. Get 2 random negatives
-    random_negatives = get_random_negatives(correct_norm_key, knowledge_index, num_negatives=2)
+    random_negatives = get_random_negatives(correct_norm_key, knowledge_index, num_negatives=2, field_combination=field_combination)
     for neg in random_negatives:
         if neg not in used_responses:
             all_negatives.append(neg)
@@ -481,7 +579,8 @@ def get_hybrid_hard_negatives(
         bm25_index=bm25_index,
         norm_keys=bm25_norm_keys,
         knowledge_objects=bm25_knowledge_objects,
-        num_negatives=3
+        num_negatives=3,
+        field_combination=field_combination
     )
     for neg in bm25_negatives:
         if neg not in used_responses:
@@ -497,7 +596,8 @@ def get_hybrid_hard_negatives(
         knowledge_objects=embedding_knowledge_objects,
         api_url=api_url,
         model=model,
-        num_negatives=3
+        num_negatives=3,
+        field_combination=field_combination
     )
     for neg in embedding_negatives:
         if neg not in used_responses:
@@ -514,7 +614,8 @@ def get_hybrid_hard_negatives(
             bm25_index=bm25_index,
             norm_keys=bm25_norm_keys,
             knowledge_objects=bm25_knowledge_objects,
-            num_negatives=10  # Get more candidates
+            num_negatives=10,  # Get more candidates
+            field_combination=field_combination
         )
         for neg in additional_bm25:
             if neg not in used_responses and len(all_negatives) < target_count:
@@ -531,7 +632,8 @@ def get_hybrid_hard_negatives(
                 knowledge_objects=embedding_knowledge_objects,
                 api_url=api_url,
                 model=model,
-                num_negatives=10  # Get more candidates
+                num_negatives=10,  # Get more candidates
+                field_combination=field_combination
             )
             for neg in additional_embedding:
                 if neg not in used_responses and len(all_negatives) < target_count:
@@ -543,7 +645,8 @@ def get_hybrid_hard_negatives(
             additional_random = get_random_negatives(
                 correct_norm_key, 
                 knowledge_index, 
-                num_negatives=target_count - len(all_negatives)
+                num_negatives=target_count - len(all_negatives),
+                field_combination=field_combination
             )
             for neg in additional_random:
                 if neg not in used_responses and len(all_negatives) < target_count:
@@ -561,6 +664,7 @@ def convert(
     with_hard_negatives_custom_embedding: bool = False,
     hybrid: bool = False,
     split_negatives: bool = False,
+    field_combinations: bool = False,
     bm25_index: BM25Okapi | None = None,
     norm_keys: List[str] | None = None,
     knowledge_objects: List[dict] | None = None,
@@ -588,13 +692,128 @@ def convert(
             ident = rec.get("lcd_id") or rec.get("user_id") or rec.get("id") or f"record#{idx}"
             raise ValueError(f"Syndrome knowledge not found for '{syn_raw}' in {ident}")
 
-        response = build_response_from_knowledge(k)
-        if not response:
-            ident = rec.get("lcd_id") or rec.get("user_id") or rec.get("id") or f"record#{idx}"
-            raise ValueError(f"Built empty response from knowledge for {ident}")
-
-        if with_hard_negatives:
+        # Generate responses based on field combinations or standard format
+        if field_combinations:
+            # Generate multiple training samples with different field combinations
+            combinations = get_field_combinations()
+            for field_combo in combinations:
+                # Use strict mode to ensure all required fields are present
+                response = build_response_with_field_combination(k, field_combo, strict_mode=True)
+                if not response:
+                    # Skip samples with missing fields for this combination
+                    continue
+                
+                # Check if we need to generate hard negatives with the same field combination
+                if with_hard_negatives:
+                    # Generate hard negatives using BM25 with the same field combination format
+                    if bm25_index is None or norm_keys is None or knowledge_objects is None:
+                        raise ValueError("BM25 index components required for hard negatives generation")
+                    
+                    hard_negatives = get_hard_negatives(
+                        query=query,
+                        correct_norm_key=syn_key,
+                        bm25_index=bm25_index,
+                        norm_keys=norm_keys,
+                        knowledge_objects=knowledge_objects,
+                        num_negatives=5,
+                        field_combination=field_combo
+                    )
+                    
+                    if split_negatives:
+                        # Split into separate samples, each with single rejected_response
+                        for negative in hard_negatives:
+                            yield {
+                                "query": query,
+                                "response": response,
+                                "rejected_response": [negative]
+                            }
+                    else:
+                        # Original format with all negatives in one sample
+                        yield {
+                            "query": query,
+                            "response": response,
+                            "rejected_response": hard_negatives
+                        }
+                elif with_hard_negatives_custom_embedding:
+                    # Generate hard negatives using custom embedding with the same field combination format
+                    if (embedding_matrix is None or embedding_norm_keys is None or 
+                        embedding_knowledge_objects is None):
+                        raise ValueError("Custom embedding index components required for hard negatives generation")
+                    
+                    hard_negatives = get_hard_negatives_with_custom_embedding(
+                        query=query,
+                        correct_norm_key=syn_key,
+                        embedding_matrix=embedding_matrix,
+                        norm_keys=embedding_norm_keys,
+                        knowledge_objects=embedding_knowledge_objects,
+                        api_url=api_url,
+                        model=model,
+                        num_negatives=5,
+                        field_combination=field_combo
+                    )
+                    
+                    if split_negatives:
+                        # Split into separate samples, each with single rejected_response
+                        for negative in hard_negatives:
+                            yield {
+                                "query": query,
+                                "response": response,
+                                "rejected_response": [negative]
+                            }
+                    else:
+                        # Original format with all negatives in one sample
+                        yield {
+                            "query": query,
+                            "response": response,
+                            "rejected_response": hard_negatives
+                        }
+                elif hybrid:
+                    # Generate hybrid hard negatives with the same field combination format
+                    if (bm25_index is None or norm_keys is None or knowledge_objects is None or
+                        embedding_matrix is None or embedding_norm_keys is None or 
+                        embedding_knowledge_objects is None):
+                        raise ValueError("Both BM25 and custom embedding index components required for hybrid hard negatives generation")
+                    
+                    hard_negatives = get_hybrid_hard_negatives(
+                        query=query,
+                        correct_norm_key=syn_key,
+                        knowledge_index=knowledge_index,
+                        bm25_index=bm25_index,
+                        bm25_norm_keys=norm_keys,
+                        bm25_knowledge_objects=knowledge_objects,
+                        embedding_matrix=embedding_matrix,
+                        embedding_norm_keys=embedding_norm_keys,
+                        embedding_knowledge_objects=embedding_knowledge_objects,
+                        api_url=api_url,
+                        model=model,
+                        field_combination=field_combo
+                    )
+                    
+                    if split_negatives:
+                        # Split into separate samples, each with single rejected_response
+                        for negative in hard_negatives:
+                            yield {
+                                "query": query,
+                                "response": response,
+                                "rejected_response": [negative]
+                            }
+                    else:
+                        # Original format with all negatives in one sample
+                        yield {
+                            "query": query,
+                            "response": response,
+                            "rejected_response": hard_negatives
+                        }
+                else:
+                    # Generate standard format sample for this field combination (no hard negatives)
+                    yield {"query": query, "response": response}
+        elif with_hard_negatives:
             # Generate hard negatives using BM25
+            response = build_response_from_knowledge(k)
+            if not response:
+                ident = rec.get("lcd_id") or rec.get("user_id") or rec.get("id") or f"record#{idx}"
+                raise ValueError(f"Built empty response from knowledge for {ident}")
+                
             if bm25_index is None or norm_keys is None or knowledge_objects is None:
                 raise ValueError("BM25 index components required for hard negatives generation")
             
@@ -691,7 +910,11 @@ def convert(
                     "rejected_response": hard_negatives
                 }
         else:
-            # Original format
+            # Standard format (no field combinations, no hard negatives)
+            response = build_response_from_knowledge(k)
+            if not response:
+                ident = rec.get("lcd_id") or rec.get("user_id") or rec.get("id") or f"record#{idx}"
+                raise ValueError(f"Built empty response from knowledge for {ident}")
             yield {"query": query, "response": response}
 
 
@@ -714,54 +937,60 @@ def main(argv: List[str]) -> int:
                    help="Generate hybrid hard negatives (2 random + top-3 BM25 + top-3 custom embedding), outputs format with rejected_response")
     p.add_argument("--split-negatives", action="store_true",
                    help="Split each sample with multiple rejected_response into separate samples, each with single rejected_response")
+    p.add_argument("--field-combinations", action="store_true",
+                   help="Generate multiple response formats with different field combinations")
     args = p.parse_args(argv)
 
     cases = load_cases(args.input)
     knowledge = load_knowledge(args.knowledge)
     
-    # Check for conflicting options
-    option_count = sum([args.with_hard_negatives, args.with_hard_negatives_custom_embedding, args.hybrid])
-    if option_count > 1:
-        raise ValueError("Cannot use multiple hard negative generation options simultaneously")
+    # Check for conflicting hard negative options (excluding field-combinations)
+    hard_negative_options = [args.with_hard_negatives, args.with_hard_negatives_custom_embedding, args.hybrid]
+    hard_negative_count = sum(hard_negative_options)
+    if hard_negative_count > 1:
+        raise ValueError("Cannot use multiple hard negative generation options simultaneously (--with-hard-negatives, --with-hard-negatives-custom-embedding, --hybrid)")
     
     # Check if split-negatives is used without hard negatives
-    if args.split_negatives and option_count == 0:
-        raise ValueError("--split-negatives can only be used with hard negative generation options (--with-hard-negatives, --with-hard-negatives-custom-embedding, or --hybrid)")
+    if args.split_negatives and not any(hard_negative_options) and not args.field_combinations:
+        raise ValueError("--split-negatives can only be used with hard negative generation options (--with-hard-negatives, --with-hard-negatives-custom-embedding, --hybrid) or --field-combinations")
     
-    # Adjust output filename if using hard negatives
+    # Adjust output filename based on options
     output_path = args.output
+    output_stem = output_path.stem
+    output_suffix = output_path.suffix
+    suffixes = []
+    
+    # Add field combinations suffix
+    if args.field_combinations:
+        suffixes.append("field_combinations")
+    
+    # Add hard negatives suffix
     if args.with_hard_negatives:
-        output_stem = output_path.stem
-        output_suffix = output_path.suffix
-        suffix = "_with_hard_negatives"
-        if args.split_negatives:
-            suffix += "_split"
-        output_path = output_path.parent / f"{output_stem}{suffix}{output_suffix}"
+        suffixes.append("with_hard_negatives")
     elif args.with_hard_negatives_custom_embedding:
-        output_stem = output_path.stem
-        output_suffix = output_path.suffix
-        suffix = "_with_hard_negatives_custom_embedding"
-        if args.split_negatives:
-            suffix += "_split"
-        output_path = output_path.parent / f"{output_stem}{suffix}{output_suffix}"
+        suffixes.append("with_hard_negatives_custom_embedding")
     elif args.hybrid:
-        output_stem = output_path.stem
-        output_suffix = output_path.suffix
-        suffix = "_hybrid"
-        if args.split_negatives:
-            suffix += "_split"
+        suffixes.append("hybrid")
+    
+    # Add split suffix if applicable
+    if args.split_negatives and any([args.with_hard_negatives, args.with_hard_negatives_custom_embedding, args.hybrid]):
+        suffixes.append("split")
+    
+    # Build final filename
+    if suffixes:
+        suffix = "_" + "_".join(suffixes)
         output_path = output_path.parent / f"{output_stem}{suffix}{output_suffix}"
     
     # Build BM25 index if needed
     bm25_index, norm_keys, knowledge_objects = None, None, None
-    if args.with_hard_negatives or args.hybrid:
+    if (args.with_hard_negatives or args.hybrid) or (args.field_combinations and (args.with_hard_negatives or args.hybrid)):
         print("Building BM25 index for hard negatives generation...")
         bm25_index, norm_keys, knowledge_objects = build_bm25_index(knowledge)
         print(f"Built BM25 index with {len(norm_keys)} syndrome entries")
     
     # Build custom embedding index if needed
     embedding_matrix, embedding_norm_keys, embedding_knowledge_objects = None, None, None
-    if args.with_hard_negatives_custom_embedding or args.hybrid:
+    if (args.with_hard_negatives_custom_embedding or args.hybrid) or (args.field_combinations and (args.with_hard_negatives_custom_embedding or args.hybrid)):
         print("Building custom embedding index for hard negatives generation...")
         embedding_matrix, embedding_norm_keys, embedding_knowledge_objects = build_custom_embedding_index(knowledge)
         print(f"Built custom embedding index with {len(embedding_norm_keys)} syndrome entries")
@@ -774,7 +1003,17 @@ def main(argv: List[str]) -> int:
     if args.max_samples is not None:
         total_samples = min(total_samples, args.max_samples)
     
-    print(f"Converting {total_samples} cases...")
+    # Adjust expected output count for field combinations
+    if args.field_combinations:
+        # Each case can generate up to 11 different response formats
+        estimated_total = total_samples * 11
+        print(f"Converting {total_samples} cases with field combinations (estimated {estimated_total} output samples)...")
+        # Use None for progress bar total since the exact count depends on available fields
+        progress_total = None
+    else:
+        print(f"Converting {total_samples} cases...")
+        progress_total = total_samples
+    
     with output_path.open("w", encoding="utf-8") as out:
         converted_items = convert(
             cases, 
@@ -784,6 +1023,7 @@ def main(argv: List[str]) -> int:
             with_hard_negatives_custom_embedding=args.with_hard_negatives_custom_embedding,
             hybrid=args.hybrid,
             split_negatives=args.split_negatives,
+            field_combinations=args.field_combinations,
             bm25_index=bm25_index,
             norm_keys=norm_keys,
             knowledge_objects=knowledge_objects,
@@ -792,22 +1032,28 @@ def main(argv: List[str]) -> int:
             embedding_knowledge_objects=embedding_knowledge_objects
         )
         
-        for item in tqdm(converted_items, total=total_samples, desc="Converting cases"):
+        for item in tqdm(converted_items, total=progress_total, desc="Converting cases"):
             out.write(json.dumps(item, ensure_ascii=False) + "\n")
             written += 1
     
+    # Build format description
+    format_parts = []
+    
+    if args.field_combinations:
+        format_parts.append("field combinations")
+    
     if args.with_hard_negatives:
-        format_desc = "with hard negatives (BM25)"
-        if args.split_negatives:
-            format_desc += " - split into individual samples"
+        format_parts.append("hard negatives (BM25)")
     elif args.with_hard_negatives_custom_embedding:
-        format_desc = "with hard negatives (custom embedding)"
-        if args.split_negatives:
-            format_desc += " - split into individual samples"
+        format_parts.append("hard negatives (custom embedding)")
     elif args.hybrid:
-        format_desc = "with hybrid hard negatives (2 random + top-3 BM25 + top-3 custom embedding)"
-        if args.split_negatives:
-            format_desc += " - split into individual samples"
+        format_parts.append("hybrid hard negatives")
+    
+    if args.split_negatives and any([args.with_hard_negatives, args.with_hard_negatives_custom_embedding, args.hybrid]):
+        format_parts.append("split into individual samples")
+    
+    if format_parts:
+        format_desc = "with " + " + ".join(format_parts)
     else:
         format_desc = "standard"
     
