@@ -20,11 +20,12 @@
 - [uv](https://docs.astral.sh/uv/) - 現代 Python 包管理工具
 - CUDA >= 11.8 (推薦使用 GPU 訓練)
 - 記憶體：建議 32GB+ RAM
-- 硬碟空間：至少 50GB 可用空間
+- 硬碟空間：至少 100GB 可用空間
 
 ### 硬體建議
-- **訓練環境**：NVIDIA GPU (V100/A100/RTX 4090 或更高)
+- **訓練環境**：NVIDIA GPU (V100/A6000/H100 或更高)
 - **推理環境**：可在 CPU 上運行，GPU 可提升效能
+> **備註**: 建議使用 Ampere 架構（A100/L40S/4090）以上的 GPU，因為支援 BF16 與 FlashAttention，可大幅降低記憶體占用並提升速度。
 
 ## 安裝指南
 
@@ -34,9 +35,6 @@
 ```bash
 # macOS 和 Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Windows
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 # 或使用 pip 安裝
 pip install uv
@@ -61,10 +59,6 @@ uv sync --extra dev
 ```bash
 # 激活虛擬環境
 source .venv/bin/activate  # Linux/Mac
-# 或 .venv\Scripts\activate  # Windows
-
-# 或使用 uv run 直接運行命令（推薦）
-uv run python main.py
 ```
 
 ### 5. (可選)加速工具
@@ -135,6 +129,10 @@ swift deploy \
   --task_type embedding \
   --infer_backend vllm \
   --torch_dtype float16
+
+# 使用vllm進行部署
+vllm serve ../output/my-training/checkpoint-xxx \
+  --served_model_name Qwen3-Embedding-0.6B-finetuned
 
 # 部署原始版本模型
 swift deploy \
