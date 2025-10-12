@@ -26,3 +26,12 @@ python scripts/convert_to_infonce.py \
   --output ./data/train.jsonl \
   --field-combinations \
   --with-hard-negatives
+
+# With permutation argument and hard negatives
+python scripts/convert_to_infonce.py \
+  --input ./data/raw_data/TCM_SD/train.jsonl \
+  --knowledge ./data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+  --output ./data/train.jsonl \
+  --with-hard-negatives \
+  --permutation-argument \
+  --multiplier 5

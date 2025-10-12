@@ -58,6 +58,14 @@ Usage examples:
     --output ./data/train.jsonl \
     --field-permutations
 
+  # With permutation argument (zone-based data augmentation with multiplier)
+  python scripts/convert_to_infonce.py \
+    --input ./data/raw_data/TCM_SD/train.jsonl \
+    --knowledge ./data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output ./data/train.jsonl \
+    --permutation-argument \
+    --multiplier 5
+
 Options:
   --max-samples N                         Limit number of processed samples
   --with-hard-negatives                   Generate hard negatives using BM25; outputs format with rejected_response
@@ -66,6 +74,8 @@ Options:
   --split-negatives                       Split each sample with multiple rejected_response into separate samples, each with single rejected_response
   --field-combinations                    Generate multiple response formats with different field combinations
   --field-permutations                    Generate multiple response formats with different field permutations (all 24 orderings)
+  --permutation-argument                  Generate augmented data using zone-based field permutations with multiplier
+  --multiplier N                          Multiplier for data augmentation (default: 5). Only used with --permutation-argument
 
 Output formats:
   Standard: {"query": "...", "response": "..."}
@@ -82,6 +92,11 @@ Output formats:
                      {"query": "...", "response": "名称：... 定义：... 常见疾病：... 典型表现：..."}
                      {"query": "...", "response": "名称：... 典型表现：... 定义：... 常见疾病：..."}
                      ... (24 permutations total)
+  Permutation argument: Zone-based data augmentation with multiplier:
+                     Zone 1 (samples 1-1000): {"query": "...", "response": "名称：... 定义：... 典型表现：... 常见疾病：..."}
+                     Zone 2 (samples 1001-2000): {"query": "...", "response": "定义：... 名称：... 常见疾病：... 典型表现：..."}
+                     Zone 3 (samples 2001-3000): {"query": "...", "response": "典型表现：... 常见疾病：... 名称：... 定义：..."}
+                     ... (multiplier zones total, each zone uses one fixed permutation)
 
 Dependencies:
   - tqdm: For progress bars during processing
@@ -692,6 +707,8 @@ def convert(
     split_negatives: bool = False,
     field_combinations: bool = False,
     field_permutations: bool = False,
+    permutation_argument: bool = False,
+    multiplier: int = 5,
     bm25_index: BM25Okapi | None = None,
     norm_keys: List[str] | None = None,
     knowledge_objects: List[dict] | None = None,
@@ -701,6 +718,163 @@ def convert(
     api_url: str = "http://0.0.0.0:8000/v1/embeddings",
     model: str = "Qwen3-Embedding-0.6B-finetuned",
 ) -> Iterable[dict]:
+    # Handle permutation argument mode: zone-based data augmentation
+    if permutation_argument:
+        # Get all available permutations
+        all_permutations = get_field_permutations()
+        
+        # Generate zone permutations (with cycling if multiplier > 24)
+        zone_permutations = []
+        for zone_idx in range(multiplier):
+            # Use modulo to cycle through permutations if multiplier > 24
+            perm_idx = zone_idx % len(all_permutations)
+            zone_permutations.append(all_permutations[perm_idx])
+        
+        # Shuffle the zone permutations to randomize them
+        zone_permutations_shuffled = zone_permutations.copy()
+        random.shuffle(zone_permutations_shuffled)
+        
+        total_cases = len(cases)
+        if max_samples is not None:
+            total_cases = min(total_cases, max_samples)
+        
+        # Generate samples for each zone
+        for zone_idx in range(multiplier):
+            current_permutation = zone_permutations_shuffled[zone_idx]
+            
+            # Process each case in this zone
+            for case_idx, rec in enumerate(cases):
+                if max_samples is not None and case_idx >= max_samples:
+                    break
+                    
+                query = build_query(rec)
+                if not query:
+                    ident = rec.get("lcd_id") or rec.get("user_id") or rec.get("id") or f"record#{case_idx+1}"
+                    raise ValueError(f"Empty query after concatenation for {ident}")
+
+                syn_raw, syn_key = pick_syndrome_key(rec)
+                if not syn_key:
+                    ident = rec.get("lcd_id") or rec.get("user_id") or rec.get("id") or f"record#{case_idx+1}"
+                    raise ValueError(f"Missing syndrome/norm_syndrome for {ident}")
+
+                k = knowledge_index.get(syn_key)
+                if not k:
+                    ident = rec.get("lcd_id") or rec.get("user_id") or rec.get("id") or f"record#{case_idx+1}"
+                    raise ValueError(f"Syndrome knowledge not found for '{syn_raw}' in {ident}")
+
+                # Use current zone's permutation to build response
+                response = build_response_with_field_combination(k, current_permutation, strict_mode=True)
+                if not response:
+                    # Skip samples with missing fields for this permutation
+                    continue
+                
+                # Check if we need to generate hard negatives with the same field permutation
+                if with_hard_negatives:
+                    # Generate hard negatives using BM25 with the same field permutation format
+                    if bm25_index is None or norm_keys is None or knowledge_objects is None:
+                        raise ValueError("BM25 index components required for hard negatives generation")
+                    
+                    hard_negatives = get_hard_negatives(
+                        query=query,
+                        correct_norm_key=syn_key,
+                        bm25_index=bm25_index,
+                        norm_keys=norm_keys,
+                        knowledge_objects=knowledge_objects,
+                        num_negatives=5,
+                        field_combination=current_permutation
+                    )
+                    
+                    if split_negatives:
+                        # Split into separate samples, each with single rejected_response
+                        for negative in hard_negatives:
+                            yield {
+                                "query": query,
+                                "response": response,
+                                "rejected_response": [negative]
+                            }
+                    else:
+                        # Original format with all negatives in one sample
+                        yield {
+                            "query": query,
+                            "response": response,
+                            "rejected_response": hard_negatives
+                        }
+                elif with_hard_negatives_custom_embedding:
+                    # Generate hard negatives using custom embedding with the same field permutation format
+                    if (embedding_matrix is None or embedding_norm_keys is None or 
+                        embedding_knowledge_objects is None):
+                        raise ValueError("Custom embedding index components required for hard negatives generation")
+                    
+                    hard_negatives = get_hard_negatives_with_custom_embedding(
+                        query=query,
+                        correct_norm_key=syn_key,
+                        embedding_matrix=embedding_matrix,
+                        norm_keys=embedding_norm_keys,
+                        knowledge_objects=embedding_knowledge_objects,
+                        api_url=api_url,
+                        model=model,
+                        num_negatives=5,
+                        field_combination=current_permutation
+                    )
+                    
+                    if split_negatives:
+                        # Split into separate samples, each with single rejected_response
+                        for negative in hard_negatives:
+                            yield {
+                                "query": query,
+                                "response": response,
+                                "rejected_response": [negative]
+                            }
+                    else:
+                        # Original format with all negatives in one sample
+                        yield {
+                            "query": query,
+                            "response": response,
+                            "rejected_response": hard_negatives
+                        }
+                elif hybrid:
+                    # Generate hybrid hard negatives with the same field permutation format
+                    if (bm25_index is None or norm_keys is None or knowledge_objects is None or
+                        embedding_matrix is None or embedding_norm_keys is None or 
+                        embedding_knowledge_objects is None):
+                        raise ValueError("Both BM25 and custom embedding index components required for hybrid hard negatives generation")
+                    
+                    hard_negatives = get_hybrid_hard_negatives(
+                        query=query,
+                        correct_norm_key=syn_key,
+                        knowledge_index=knowledge_index,
+                        bm25_index=bm25_index,
+                        bm25_norm_keys=norm_keys,
+                        bm25_knowledge_objects=knowledge_objects,
+                        embedding_matrix=embedding_matrix,
+                        embedding_norm_keys=embedding_norm_keys,
+                        embedding_knowledge_objects=embedding_knowledge_objects,
+                        api_url=api_url,
+                        model=model,
+                        field_combination=current_permutation
+                    )
+                    
+                    if split_negatives:
+                        # Split into separate samples, each with single rejected_response
+                        for negative in hard_negatives:
+                            yield {
+                                "query": query,
+                                "response": response,
+                                "rejected_response": [negative]
+                            }
+                    else:
+                        # Original format with all negatives in one sample
+                        yield {
+                            "query": query,
+                            "response": response,
+                            "rejected_response": hard_negatives
+                        }
+                else:
+                    # Generate standard format sample for this field permutation (no hard negatives)
+                    yield {"query": query, "response": response}
+        return
+    
+    # Original logic for other modes (non-permutation-argument)
     for idx, rec in enumerate(cases, 1):
         if max_samples is not None and idx > max_samples:
             break
@@ -1082,6 +1256,10 @@ def main(argv: List[str]) -> int:
                    help="Generate multiple response formats with different field combinations")
     p.add_argument("--field-permutations", action="store_true",
                    help="Generate multiple response formats with different field permutations (all 24 orderings)")
+    p.add_argument("--permutation-argument", action="store_true",
+                   help="Generate augmented data using zone-based field permutations with multiplier")
+    p.add_argument("--multiplier", type=int, default=5,
+                   help="Multiplier for data augmentation (default: 5). Only used with --permutation-argument")
     args = p.parse_args(argv)
 
     cases = load_cases(args.input)
@@ -1097,9 +1275,12 @@ def main(argv: List[str]) -> int:
     if args.field_combinations and args.field_permutations:
         raise ValueError("Cannot use both --field-combinations and --field-permutations simultaneously")
     
+    if args.permutation_argument and (args.field_combinations or args.field_permutations):
+        raise ValueError("Cannot use --permutation-argument with --field-combinations or --field-permutations")
+    
     # Check if split-negatives is used without hard negatives
-    if args.split_negatives and not any(hard_negative_options) and not args.field_combinations and not args.field_permutations:
-        raise ValueError("--split-negatives can only be used with hard negative generation options (--with-hard-negatives, --with-hard-negatives-custom-embedding, --hybrid) or --field-combinations or --field-permutations")
+    if args.split_negatives and not any(hard_negative_options) and not args.field_combinations and not args.field_permutations and not args.permutation_argument:
+        raise ValueError("--split-negatives can only be used with hard negative generation options (--with-hard-negatives, --with-hard-negatives-custom-embedding, --hybrid) or --field-combinations or --field-permutations or --permutation-argument")
     
     # Adjust output filename based on options
     output_path = args.output
@@ -1107,11 +1288,13 @@ def main(argv: List[str]) -> int:
     output_suffix = output_path.suffix
     suffixes = []
     
-    # Add field combinations or permutations suffix
+    # Add field combinations, permutations, or permutation-argument suffix
     if args.field_combinations:
         suffixes.append("field_combinations")
     elif args.field_permutations:
         suffixes.append("field_permutations")
+    elif args.permutation_argument:
+        suffixes.append(f"permutation_argument_x{args.multiplier}")
     
     # Add hard negatives suffix
     if args.with_hard_negatives:
@@ -1132,14 +1315,14 @@ def main(argv: List[str]) -> int:
     
     # Build BM25 index if needed
     bm25_index, norm_keys, knowledge_objects = None, None, None
-    if (args.with_hard_negatives or args.hybrid) or ((args.field_combinations or args.field_permutations) and (args.with_hard_negatives or args.hybrid)):
+    if (args.with_hard_negatives or args.hybrid) or ((args.field_combinations or args.field_permutations or args.permutation_argument) and (args.with_hard_negatives or args.hybrid)):
         print("Building BM25 index for hard negatives generation...")
         bm25_index, norm_keys, knowledge_objects = build_bm25_index(knowledge)
         print(f"Built BM25 index with {len(norm_keys)} syndrome entries")
     
     # Build custom embedding index if needed
     embedding_matrix, embedding_norm_keys, embedding_knowledge_objects = None, None, None
-    if (args.with_hard_negatives_custom_embedding or args.hybrid) or ((args.field_combinations or args.field_permutations) and (args.with_hard_negatives_custom_embedding or args.hybrid)):
+    if (args.with_hard_negatives_custom_embedding or args.hybrid) or ((args.field_combinations or args.field_permutations or args.permutation_argument) and (args.with_hard_negatives_custom_embedding or args.hybrid)):
         print("Building custom embedding index for hard negatives generation...")
         embedding_matrix, embedding_norm_keys, embedding_knowledge_objects = build_custom_embedding_index(knowledge)
         print(f"Built custom embedding index with {len(embedding_norm_keys)} syndrome entries")
@@ -1152,7 +1335,7 @@ def main(argv: List[str]) -> int:
     if args.max_samples is not None:
         total_samples = min(total_samples, args.max_samples)
     
-    # Adjust expected output count for field combinations or permutations
+    # Adjust expected output count for field combinations, permutations, or permutation-argument
     if args.field_combinations:
         # Each case can generate up to 11 different response formats
         estimated_total = total_samples * 11
@@ -1165,6 +1348,11 @@ def main(argv: List[str]) -> int:
         print(f"Converting {total_samples} cases with field permutations (estimated {estimated_total} output samples)...")
         # Use None for progress bar total since the exact count depends on available fields
         progress_total = None
+    elif args.permutation_argument:
+        # Each case will be replicated multiplier times, each zone using a different permutation
+        estimated_total = total_samples * args.multiplier
+        print(f"Converting {total_samples} cases with permutation argument x{args.multiplier} (estimated {estimated_total} output samples)...")
+        progress_total = estimated_total
     else:
         print(f"Converting {total_samples} cases...")
         progress_total = total_samples
@@ -1180,6 +1368,8 @@ def main(argv: List[str]) -> int:
             split_negatives=args.split_negatives,
             field_combinations=args.field_combinations,
             field_permutations=args.field_permutations,
+            permutation_argument=args.permutation_argument,
+            multiplier=args.multiplier,
             bm25_index=bm25_index,
             norm_keys=norm_keys,
             knowledge_objects=knowledge_objects,
@@ -1199,6 +1389,8 @@ def main(argv: List[str]) -> int:
         format_parts.append("field combinations")
     elif args.field_permutations:
         format_parts.append("field permutations")
+    elif args.permutation_argument:
+        format_parts.append(f"permutation argument x{args.multiplier}")
     
     if args.with_hard_negatives:
         format_parts.append("hard negatives (BM25)")

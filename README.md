@@ -69,6 +69,16 @@ uv pip install liger-kernel # save GPU memory resources
 uv pip install flash-attn --no-build-isolation
 ```
 
+### Optional: Multi-Stage Sampler Extension
+
+本專案有一個自訂分支（`feature/3.8.2-multi-stage-sampler`）提供增強版的多階段取樣機制。
+
+```bash
+uv pip install git+https://github.com/NightLightTw/ms-swift.git@feature/3.8.2-multi-stage-sampler
+```
+
+> ⚠️ 注意：此分支由 NightLightTw 維護，可能與上游版本不同。僅在需要多階段取樣功能時使用。
+
 ## 開發指南
 
 ### 使用 uv 進行開發
@@ -255,6 +265,12 @@ uv run python scripts/convert_to_infonce.py \
 轉換腳本會將病例記錄：
 - **query**: 組合「主訴」、「現病史」、「體格檢查」等臨床資訊
 - **response**: 根據症候類型匹配對應的知識庫內容，包含「名稱」、「定義」、「典型表現」、「常見疾病」等
+
+
+## 開發
+```
+uv pip install -e ../ms-swift
+```
 
 ## 專案結構
 
