@@ -1,10 +1,10 @@
 # TCM Embedding Model
 
-基於 Qwen3-Embedding 模型針對傳統中醫（Traditional Chinese Medicine, TCM）領域進行 Fine-tuning 的專案。
+基於 Qwen3-Embedding/Reranker 模型針對傳統中醫（Traditional Chinese Medicine, TCM）領域進行 Fine-tuning 的專案。
 
 ## 專案概述
 
-本專案旨在利用 Qwen3-Embedding 模型的強大語義理解能力，透過傳統中醫相關文獻和資料進行微調，建立專門針對傳統中醫領域的高品質嵌入模型。
+本專案利用 Qwen3-Embedding 和 Qwen3-Reranker 模型，透過 TCM-SD 資料集進行微調，建立專門針對傳統中醫證型診斷的高品質嵌入和重排序模型。
 
 ## 目標功能
 
@@ -102,17 +102,73 @@ uv run python your_script.py
 ```
 
 ### 資料準備
+
+轉換工具支持多種數據增強策略，參考 `scripts/load_data.sh` 查看所有選項：
+
 ```bash
-# 將原始資料轉換為 InfoNCE 格式
+# 基礎格式（無硬負樣本）
 uv run python scripts/convert_to_infonce.py \
     --input data/raw_data/TCM_SD/train.jsonl \
     --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
-    --output data/train_full.jsonl
+    --output data/train.jsonl
+
+# 使用 BM25 硬負樣本
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_with_hard_negatives.jsonl \
+    --with-hard-negatives
+
+# 使用自定義 Embedding 硬負樣本
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_with_hard_negatives_custom_embedding.jsonl \
+    --with-hard-negatives-custom-embedding
+
+# 混合硬負樣本（2隨機 + 3BM25 + 3Embedding）
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_hybrid.jsonl \
+    --hybrid
+
+# 字段組合增強（11種組合）
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_field_combinations.jsonl \
+    --field-combinations \
+    --with-hard-negatives
+
+# 排列增強（zone-based，5倍數據）
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_permutation_argument_x5.jsonl \
+    --permutation-argument \
+    --multiplier 5 \
+    --with-hard-negatives
+
+# 限制樣本數量（測試用）
+uv run python scripts/convert_to_infonce.py \
+    --input data/raw_data/TCM_SD/train.jsonl \
+    --knowledge data/raw_data/TCM_SD/syndrome_knowledge.jsonl \
+    --output data/train_sample.jsonl \
+    --max-samples 100
 ```
 
 ### 開始訓練
+
+#### Embedding 模型訓練
+
+參考 `scripts/train.sh`：
+
 ```bash
-# 訓練腳本 (scripts/train.sh)
+export CUDA_VISIBLE_DEVICES=0,1
+export NVIDIA_TF32_OVERRIDE=1
+export INFONCE_MASK_FAKE_NEGATIVE=true
+
 NPROC_PER_NODE=2 \
 swift sft \
   --model Qwen/Qwen3-Embedding-0.6B \
@@ -125,17 +181,53 @@ swift sft \
   --eval_strategy steps --eval_steps 100 \
   --num_train_epochs 5 \
   --per_device_train_batch_size 32 \
+  --per_device_eval_batch_size 32 \
+  --gradient_accumulation_steps 1 \
   --learning_rate 6e-6 \
   --loss_type infonce \
+  --dataloader_drop_last true \
+  --dataloader_num_workers 16 \
+  --dataloader_persistent_workers true \
+  --attn_impl flash_attn \
+  --bf16 true \
+  --use_hf true \
+  --seed 42
+```
+
+#### Reranker 模型訓練
+
+```bash
+# 使用相同的 train.jsonl 數據，但改用 reranker 任務類型
+swift sft \
+  --model Qwen/Qwen3-Reranker-4B \
+  --task_type generative_reranker \
+  --loss_type generative_reranker \
+  --train_type full \
+  --dataset data/train.jsonl \
+  --val_dataset data/dev.jsonl \
+  --output_dir output/reranker \
+  --eval_strategy steps --eval_steps 100 \
+  --num_train_epochs 5 \
+  --per_device_train_batch_size 16 \
+  --per_device_eval_batch_size 16 \
+  --gradient_accumulation_steps 2 \
+  --learning_rate 6e-6 \
+  --dataloader_drop_last true \
   --bf16 true
 ```
 
 ### 訓練建議
-- `per_device_train_batch_size` 可以在 GPU 記憶體負載允許的情況下盡量拉高，以提升訓練穩定度與效能。
-- 訓練 InfoNCE 任務時，開啟 `INFONCE_USE_BATCH=true` 並搭配 `INFONCE_MASK_FAKE_NEGATIVE` 可增加負樣本的多樣性並有效提升效果。 p.s. Reranker 時無法使用，需先在資料集中處理。
-- 啟用 `flash_attn` 並使用 `bf16` 可有效提升訓練速度與最終表現。
+- `per_device_train_batch_size` 建議在 GPU 記憶體允許下盡量拉高，提升訓練穩定度
+- 訓練 InfoNCE 時，啟用 `INFONCE_MASK_FAKE_NEGATIVE=true` 可遮蔽假陰性樣本，提升效果
+- 使用 `--attn_impl flash_attn` 和 `--bf16 true` 可大幅提升訓練速度（需 Ampere 架構以上 GPU）
+- `--dataloader_persistent_workers true` 可減少 dataloader 重啟開銷
 
-### 模型推理
+### 模型部署與推理
+
+#### Embedding 模型部署
+
+參考 `scripts/deploy.sh`：
+
 ```bash
 # 使用部署腳本進行模型服務部署 (scripts/deploy.sh)
 swift deploy \
@@ -156,8 +248,34 @@ swift deploy \
   --task_type embedding \
   --infer_backend vllm \
   --torch_dtype float16
+```
 
-# 或者使用推理模式
+#### Reranker 模型部署
+
+參考 `scripts/deploy_rerank.sh`：
+
+```bash
+export CUDA_VISIBLE_DEVICES=1
+
+# 使用 vllm 部署 Reranker（swift<3.9 有 bug，直接用 vllm）
+vllm serve output/reranker/my-training/checkpoint-xxx \
+   --hf_overrides '{"architectures": ["Qwen3ForSequenceClassification"],"classifier_from_token": ["no", "yes"],"is_original_qwen3_reranker": true}' \
+   --port 8001 \
+   --host 0.0.0.0 \
+   --served_model_name Qwen/Qwen3-Reranker-0.6B-v2-12000 \
+   --max-model-len 8192
+
+# 部署基礎 Reranker 模型
+vllm serve Qwen/Qwen3-Reranker-0.6B \
+   --hf_overrides '{"architectures": ["Qwen3ForSequenceClassification"],"classifier_from_token": ["no", "yes"],"is_original_qwen3_reranker": true}' \
+   --port 8001 \
+   --host 0.0.0.0
+```
+
+#### 批次推理
+
+```bash
+# 使用 swift infer 進行批次推理
 uv run swift infer \
     --ckpt_dir output/my-training/checkpoint-xxx \
     --infer_data_path data/infer_example.jsonl
@@ -176,31 +294,32 @@ uv add ms-swift
 uv run swift --version
 ```
 
-#### SWIFT 訓練範例
+#### SWIFT 訓練範例（DeepSpeed）
+
+使用 DeepSpeed 進行多 GPU 訓練：
+
 ```bash
-# 使用 SWIFT 命令行工具進行訓練
-nproc_per_node=8
-NPROC_PER_NODE=$nproc_per_node \
+NPROC_PER_NODE=8 \
 swift sft \
-    --model Qwen/Qwen3-Embedding-0.6B \
+    --model Qwen/Qwen3-Embedding-4B \
     --task_type embedding \
     --model_type qwen3_emb \
     --train_type full \
-    --dataset sentence-transformers/stsb:positive \
-    --split_dataset_ratio 0.05 \
+    --dataset data/train.jsonl \
+    --val_dataset data/dev.jsonl \
+    --output_dir output/embedding/4B \
     --eval_strategy steps \
-    --output_dir output \
-    --eval_steps 20 \
+    --eval_steps 200 \
     --num_train_epochs 5 \
-    --save_steps 20 \
+    --save_steps 200 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 4 \
     --learning_rate 6e-6 \
     --loss_type infonce \
-    --label_names labels \
     --dataloader_drop_last true \
-    --deepspeed zero3
+    --deepspeed zero3 \
+    --bf16 true
 ```
 
 ### InfoNCE 資料格式規範
@@ -267,13 +386,34 @@ uv run python scripts/convert_to_infonce.py \
 
 ### 資料格式轉換說明
 
-轉換腳本會將病例記錄：
+`convert_to_infonce.py` 將 TCM-SD 病例記錄轉換為 InfoNCE 訓練格式：
+
+**基本轉換**：
 - **query**: 組合「主訴」、「現病史」、「體格檢查」等臨床資訊
-- **response**: 根據症候類型匹配對應的知識庫內容，包含「名稱」、「定義」、「典型表現」、「常見疾病」等
+- **response**: 根據證型（syndrome）匹配知識庫，包含「名稱」、「定義」、「典型表現」、「常見疾病」等
 
+**數據增強選項**：
+- `--with-hard-negatives`: 使用 BM25 生成硬負樣本
+- `--with-hard-negatives-custom-embedding`: 使用自定義 Embedding API 生成硬負樣本
+- `--hybrid`: 混合負樣本（2 隨機 + 3 BM25 + 3 Embedding）
+- `--split-negatives`: 將多個 rejected_response 拆分為獨立樣本
+- `--field-combinations`: 生成 11 種字段組合（名稱、定義、典型表現等的不同組合）
+- `--field-permutations`: 生成 24 種字段排列（所有可能的字段順序）
+- `--permutation-argument --multiplier N`: Zone-based 排列增強（N 倍數據）
 
-## 開發
+**輸出格式**：
+```json
+// 標準格式
+{"query": "主訴：...現病史：...體格檢查：...", "response": "名稱：...定義：..."}
+
+// 帶硬負樣本
+{"query": "...", "response": "...", "rejected_response": ["...", "...", "..."]}
 ```
+## 開發
+
+### 本地開發 ms-swift
+```bash
+# 如需修改 ms-swift 源碼，可安裝本地版本
 uv pip install -e ../ms-swift
 ```
 
@@ -281,42 +421,54 @@ uv pip install -e ../ms-swift
 
 ```
 TCMEmbeddingModel/
-├── README.md                    # 專案說明文件
-├── pyproject.toml               # 專案配置和依賴管理 (uv 配置)
-├── uv.lock                     # uv 依賴鎖定文件
-├── main.py                     # 主要執行入口
-├── data/                       # 資料目錄
-├── scripts/                    # 工具腳本
-│   ├── convert_to_infonce.py  # 將案例資料轉換為 InfoNCE 格式
-│   ├── train.sh               # 訓練腳本
-│   └── deploy.sh              # 部署腳本
-├── output/                     # 訓練輸出
-│   └── vX-XXXXXXXX-XXXXXX/    # 訓練結果
-│       ├── checkpoint-XXXX/   # 模型檢查點
-│       ├── logging.jsonl      # 訓練日誌
-│       └── runs/              # TensorBoard 日誌
-└── .venv/                     # uv 建立的虛擬環境 (不納入版控)
+├── README.md                                # 專案說明文件
+├── pyproject.toml                           # 專案配置和依賴管理 (uv)
+├── uv.lock                                  # uv 依賴鎖定文件
+├── data/                                    # 資料目錄
+│   ├── raw_data/TCM_SD/                    # 原始 TCM-SD 資料集
+│   │   ├── train.jsonl                     # 43,180 筆訓練案例
+│   │   ├── dev.jsonl                       # 5,486 筆驗證案例
+│   │   ├── test.jsonl                      # 5,486 筆測試案例
+│   │   ├── syndrome_knowledge.jsonl        # 1,027 筆證型知識
+│   │   └── syndrome_vocab.txt              # 148 個證型詞彙
+│   ├── train.jsonl                         # 轉換後的訓練資料
+│   ├── dev.jsonl                           # 轉換後的驗證資料
+│   ├── test.jsonl                          # 轉換後的測試資料
+│   ├── train_with_hard_negatives.jsonl     # 帶 BM25 硬負樣本
+│   ├── train_hybrid.jsonl                  # 混合硬負樣本
+│   ├── train_field_combinations_*.jsonl    # 字段組合增強
+│   └── train_permutation_argument_*.jsonl  # 排列增強
+├── scripts/                                 # 工具腳本
+│   ├── convert_to_infonce.py               # 資料轉換工具（1400+ 行）
+│   ├── load_data.sh                        # 資料轉換範例腳本
+│   ├── train.sh                            # Embedding 訓練腳本
+│   ├── deploy.sh                           # Embedding 部署腳本
+│   └── deploy_rerank.sh                    # Reranker 部署腳本
+├── output/                                  # 訓練輸出
+└── .venv/                                   # uv 虛擬環境 (不納入版控)
 ```
 
 ## uv 配置說明
 
-### pyproject.toml 重要配置
-- **依賴管理**：使用 uv 進行快速依賴解析和安裝
-- **Python 版本**：Python 3.10
-- **核心依賴**：ms-swift, torch, transformers
-- **命令列工具**：預留了未來的 CLI 命令入口
+### pyproject.toml 實際配置
+```toml
+[project]
+name = "tcmembeddingmodel"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "jieba>=0.42.1",        # 中文分詞（用於 BM25）
+    "ms-swift>=3.7.3",      # 訓練框架
+    "rank-bm25>=0.2.2",     # BM25 硬負樣本生成
+    "vllm>=0.10.1.1",       # 推理引擎
+]
+```
 
-### SWIFT 框架特色
-- 🚀 **高效微調**：支援 LoRA、QLoRA、Adapter 等參數高效微調方法
-- 🔄 **分散式訓練**：支援 DDP、模型並行、流水線並行
-- 📊 **多種任務**：支援文本分類、序列標註、embedding 等任務
-- 🛠️ **易於使用**：提供命令行工具和 Python API
-
-### uv 優勢
-- 🚀 **速度**：比 pip 快 10-100 倍的依賴安裝
-- 🔒 **穩定**：uv.lock 確保依賴版本一致性
-- 🛠️ **簡單**：統一的專案管理工具
-- 🐍 **Python 管理**：自動管理 Python 版本
+### 依賴說明
+- **jieba**: 中文分詞工具，用於 BM25 硬負樣本生成
+- **ms-swift**: ModelScope SWIFT 訓練框架（>=3.7.3）
+- **rank-bm25**: BM25 檢索算法，用於生成硬負樣本
+- **vllm**: 高效推理引擎，用於模型部署
 
 ## 技術參考文件
 - [ms-swift Embedding 最佳實踐](https://github.com/modelscope/ms-swift/blob/main/docs/source_en/BestPractices/Embedding.md)
