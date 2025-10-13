@@ -160,6 +160,8 @@ uv run python scripts/convert_to_infonce.py \
 
 ### 開始訓練
 
+本專案使用 [ms-swift](https://github.com/modelscope/ms-swift) 框架對 [Qwen3-Embedding](https://github.com/QwenLM/Qwen3-Embedding) 模型進行 fine-tuning。
+
 #### Embedding 模型訓練
 
 參考 `scripts/train.sh`：
@@ -270,56 +272,6 @@ vllm serve Qwen/Qwen3-Reranker-0.6B \
    --hf_overrides '{"architectures": ["Qwen3ForSequenceClassification"],"classifier_from_token": ["no", "yes"],"is_original_qwen3_reranker": true}' \
    --port 8001 \
    --host 0.0.0.0
-```
-
-#### 批次推理
-
-```bash
-# 使用 swift infer 進行批次推理
-uv run swift infer \
-    --ckpt_dir output/my-training/checkpoint-xxx \
-    --infer_data_path data/infer_example.jsonl
-```
-
-### SWIFT Fine-tuning 指南
-
-本專案使用 [ms-swift](https://github.com/modelscope/ms-swift) 框架對 [Qwen3-Embedding](https://github.com/QwenLM/Qwen3-Embedding) 模型進行 fine-tuning。
-
-#### 安裝 SWIFT 框架
-```bash
-# 使用 uv 安裝 SWIFT 相關依賴
-uv add ms-swift
-
-# 驗證安裝
-uv run swift --version
-```
-
-#### SWIFT 訓練範例（DeepSpeed）
-
-使用 DeepSpeed 進行多 GPU 訓練：
-
-```bash
-NPROC_PER_NODE=8 \
-swift sft \
-    --model Qwen/Qwen3-Embedding-4B \
-    --task_type embedding \
-    --model_type qwen3_emb \
-    --train_type full \
-    --dataset data/train.jsonl \
-    --val_dataset data/dev.jsonl \
-    --output_dir output/embedding/4B \
-    --eval_strategy steps \
-    --eval_steps 200 \
-    --num_train_epochs 5 \
-    --save_steps 200 \
-    --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 4 \
-    --learning_rate 6e-6 \
-    --loss_type infonce \
-    --dataloader_drop_last true \
-    --deepspeed zero3 \
-    --bf16 true
 ```
 
 ### InfoNCE 資料格式規範
