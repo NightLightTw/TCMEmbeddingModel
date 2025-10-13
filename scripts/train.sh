@@ -3,6 +3,7 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES=0,1
 export NVIDIA_TF32_OVERRIDE=1
+export INFONCE_USE_BATCH=true
 export INFONCE_MASK_FAKE_NEGATIVE=true
 
 NPROC_PER_NODE=2 \
