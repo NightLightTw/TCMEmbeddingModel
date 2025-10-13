@@ -222,7 +222,8 @@ swift sft \
 
 ### 訓練建議
 - `per_device_train_batch_size` 建議在 GPU 記憶體允許下盡量拉高，提升訓練穩定度
-- 訓練 InfoNCE 時，啟用 `INFONCE_MASK_FAKE_NEGATIVE=true` 可遮蔽假陰性樣本，提升效果
+- 訓練 InfoNCE 時，啟用 `INFONCE_USE_BATCH=true` 可將batch內的其他正樣本作爲負樣本，提升多樣性
+- 配合 `INFONCE_MASK_FAKE_NEGATIVE=true` 可遮蔽假陰性樣本，提升效果
 - 使用 `--attn_impl flash_attn` 和 `--bf16 true` 可大幅提升訓練速度（需 Ampere 架構以上 GPU）
 - `--dataloader_persistent_workers true` 可減少 dataloader 重啟開銷
 
