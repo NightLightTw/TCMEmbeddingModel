@@ -40,7 +40,7 @@ pip install uv
 
 ### 2. 克隆專案
 ```bash
-git clone <repository-url>
+git clone https://github.com/NightLightTw/TCMEmbeddingModel.git
 cd TCMEmbeddingModel
 ```
 
