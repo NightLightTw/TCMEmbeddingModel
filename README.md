@@ -1,7 +1,5 @@
 # TCM Embedding Model
 
-基於 Qwen3-Embedding/Reranker 模型針對傳統中醫（Traditional Chinese Medicine, TCM）領域進行 Fine-tuning 的專案。
-
 ## 專案概述
 
 本專案利用 Qwen3-Embedding 和 Qwen3-Reranker 模型，透過 TCM-SD 資料集進行微調，建立專門針對傳統中醫證型診斷的高品質嵌入和重排序模型。
