@@ -130,6 +130,11 @@ swift sft \
   --bf16 true
 ```
 
+### 訓練建議
+- `per_device_train_batch_size` 可以在 GPU 記憶體負載允許的情況下盡量拉高，以提升訓練穩定度與效能。
+- 訓練 InfoNCE 任務時，開啟 `INFONCE_USE_BATCH=true` 並搭配 `INFONCE_MASK_FAKE_NEGATIVE` 可增加負樣本的多樣性並有效提升效果。 p.s. Reranker 時無法使用，需先在資料集中處理。
+- 啟用 `flash_attn` 並使用 `bf16` 可有效提升訓練速度與最終表現。
+
 ### 模型推理
 ```bash
 # 使用部署腳本進行模型服務部署 (scripts/deploy.sh)
@@ -297,7 +302,7 @@ TCMEmbeddingModel/
 
 ### pyproject.toml 重要配置
 - **依賴管理**：使用 uv 進行快速依賴解析和安裝
-- **Python 版本**：固定使用 Python 3.10
+- **Python 版本**：Python 3.10
 - **核心依賴**：ms-swift, torch, transformers
 - **命令列工具**：預留了未來的 CLI 命令入口
 
