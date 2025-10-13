@@ -101,6 +101,9 @@ uv run python your_script.py
 
 ### 資料準備
 
+- 原始資料需自官方 TCM-SD 專案取得：[Borororo/ZY-BERT](https://github.com/Borororo/ZY-BERT)
+> **注意**：官方釋出的 `train.json` 等檔案實際為 JSON Lines 格式，請改為 `.jsonl` 副檔名後再使用，避免解析失敗。
+
 轉換工具支持多種數據增強策略，參考 `scripts/load_data.sh` 查看所有選項：
 
 ```bash
